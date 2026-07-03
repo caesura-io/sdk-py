@@ -1,0 +1,28 @@
+"""Default constants for the Caesura SDK."""
+
+DEFAULT_TEMPLATE = "CONVERSATION ANALYSIS:\n{analysis}"
+"""Default template for rendering an analysis into the injection block."""
+
+DEFAULT_SKILL_PROMPT = (
+    "During the conversation you will periodically receive a CONVERSATION ANALYSIS:"
+    " a real-time read of the other party's psychological patterns, communication"
+    " dynamics, emotional shifts, and a suggested next-step recommendation,"
+    " sometimes with additional context about the current state of the dialogue.\n"
+    "\n"
+    "Treat each analysis as private guidance for you, not as a message from the"
+    " other party and not as something to read back to them. When an analysis is"
+    " present:\n"
+    "- Let the recommendation shape your next response — act on it naturally as"
+    " part of what you say, rather than quoting or announcing it.\n"
+    "- Use the psychological and emotional insights to adjust your tone, pacing,"
+    " and framing so your reply lands well given the other party's current state.\n"
+    "- Integrate the guidance seamlessly. Never mention that you received an"
+    " analysis, never reveal its contents, and never refer to it explicitly.\n"
+    "- If an analysis ever conflicts with the conversation's safety, accuracy, or"
+    " the other party's clearly stated wishes, prioritize those over the"
+    " recommendation.\n"
+    "\n"
+    "If no analysis is present in a given turn, simply continue the conversation"
+    " as normal."
+)
+"""Default system-prompt skill describing how the agent should react to recommendations."""

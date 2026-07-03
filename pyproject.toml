@@ -1,0 +1,38 @@
+[project]
+name = "caesura-sdk-py"
+version = "0.0.0"
+description = "Caesura SDKs for Python AI frameworks"
+requires-python = ">=3.10"
+
+[tool.uv.workspace]
+members = ["packages/*"]
+
+[tool.uv]
+dev-dependencies = [
+    "ruff>=0.11",
+    "mypy>=1.15",
+    "pytest>=8.0",
+    "pytest-asyncio>=0.25",
+    "python-semantic-release>=9.0",
+    "respx>=0.22",
+]
+
+[tool.ruff]
+target-version = "py310"
+line-length = 120
+
+[tool.ruff.lint]
+select = ["E", "F", "W", "I", "UP", "B", "SIM", "TCH", "RUF"]
+
+[tool.ruff.format]
+quote-style = "double"
+
+[tool.mypy]
+python_version = "3.10"
+strict = true
+warn_return_any = true
+warn_unused_configs = true
+
+[tool.pytest.ini_options]
+asyncio_mode = "auto"
+testpaths = ["packages/caesura-core/tests", "packages/caesura-openai/tests"]

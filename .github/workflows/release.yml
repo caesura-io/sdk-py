@@ -27,12 +27,15 @@ jobs:
       - name: Set up Python
         run: uv python install 3.10
 
-      - name: Build and Release
+      - name: Version and Build
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           uv tool install python-semantic-release
           semantic-release version
-          uv build --package caesura-core
-          uv build --package caesura-openai
+          uv build --package caesura-io-core
+          uv build --package caesura-io-openai
           semantic-release publish
+
+      - name: Publish package distributions to PyPI
+        uses: pypa/gh-action-pypi-publish@release/v1

@@ -216,7 +216,13 @@ class TestBuildAnalyzeMessages:
         h = hash_message("Customer", "yes")
         state = ConversationState(
             recommendations=[
-                StoredRecommendation(id=str(i), analysis=CaesuraAnalysis(recommendation=f"A{i}"), after_message_hash=h, created_at_ms=i * 100, created_at_turn=i)
+                StoredRecommendation(
+                    id=str(i),
+                    analysis=CaesuraAnalysis(recommendation=f"A{i}"),
+                    after_message_hash=h,
+                    created_at_ms=i * 100,
+                    created_at_turn=i,
+                )
                 for i in range(1, 6)
             ],
             turn=5,
@@ -284,27 +290,40 @@ class TestSelectActive:
 
     def test_retains_all_under_none_ttl(self) -> None:
         state = self._make_state()
-        inject = ResolvedInjectConfig(keep_last="all", ttl=TtlNone(), placement="end", as_role="user", template="", skill_prompt=None)
+        inject = ResolvedInjectConfig(
+            keep_last="all", ttl=TtlNone(), placement="end", as_role="user", template="", skill_prompt=None
+        )
         active = select_active(state, inject, 3000)
         assert len(active) == 2
 
     def test_respects_turns_ttl(self) -> None:
         state = self._make_state()
-        inject = ResolvedInjectConfig(keep_last="all", ttl=TtlTurns(turns=1), placement="end", as_role="user", template="", skill_prompt=None)
+        inject = ResolvedInjectConfig(
+            keep_last="all", ttl=TtlTurns(turns=1), placement="end", as_role="user", template="", skill_prompt=None
+        )
         active = select_active(state, inject, 3000)
         assert len(active) == 1
         assert active[0].id == "2"
 
     def test_respects_seconds_ttl(self) -> None:
         state = self._make_state()
-        inject = ResolvedInjectConfig(keep_last="all", ttl=TtlSeconds(seconds=1.5), placement="end", as_role="user", template="", skill_prompt=None)
+        inject = ResolvedInjectConfig(
+            keep_last="all",
+            ttl=TtlSeconds(seconds=1.5),
+            placement="end",
+            as_role="user",
+            template="",
+            skill_prompt=None,
+        )
         active = select_active(state, inject, 3000)
         assert len(active) == 1
         assert active[0].id == "2"
 
     def test_respects_keep_last_limit(self) -> None:
         state = self._make_state()
-        inject = ResolvedInjectConfig(keep_last=1, ttl=TtlNone(), placement="end", as_role="user", template="", skill_prompt=None)
+        inject = ResolvedInjectConfig(
+            keep_last=1, ttl=TtlNone(), placement="end", as_role="user", template="", skill_prompt=None
+        )
         active = select_active(state, inject, 3000)
         assert len(active) == 1
         assert active[0].id == "2"
@@ -314,12 +333,18 @@ class TestRenderBlock:
     def test_renders_recommendations(self) -> None:
         recs = [
             StoredRecommendation(
-                id="1", analysis=CaesuraAnalysis(recommendation="Rec A"),
-                after_message_hash=hash_message("Customer", "x"), created_at_ms=1000, created_at_turn=1,
+                id="1",
+                analysis=CaesuraAnalysis(recommendation="Rec A"),
+                after_message_hash=hash_message("Customer", "x"),
+                created_at_ms=1000,
+                created_at_turn=1,
             ),
             StoredRecommendation(
-                id="2", analysis=CaesuraAnalysis(recommendation="Rec B"),
-                after_message_hash=hash_message("Customer", "y"), created_at_ms=2000, created_at_turn=2,
+                id="2",
+                analysis=CaesuraAnalysis(recommendation="Rec B"),
+                after_message_hash=hash_message("Customer", "y"),
+                created_at_ms=2000,
+                created_at_turn=2,
             ),
         ]
         inject = ResolvedInjectConfig(

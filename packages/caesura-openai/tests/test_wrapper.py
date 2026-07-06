@@ -28,9 +28,7 @@ class TestSyncWrapper:
         oai_route = respx.post("http://openai.test/chat/completions").mock(
             return_value=httpx.Response(200, json={"choices": [{"message": {"content": "hi"}}]})
         )
-        respx.post("http://caesura.test/api/analyze").mock(
-            return_value=httpx.Response(200, json={})
-        )
+        respx.post("http://caesura.test/api/analyze").mock(return_value=httpx.Response(200, json={}))
 
         caesura_client.chat.completions.create(
             model="gpt-4o",
@@ -40,6 +38,7 @@ class TestSyncWrapper:
 
         req = oai_route.calls.last.request
         import json
+
         body = json.loads(req.content)
         assert "caesura_conversation_id" not in body
 
@@ -48,16 +47,13 @@ class TestSyncWrapper:
         """Crucial security test: Caesura API key must not go to OpenAI, and OpenAI key must not go to Caesura."""
         client = OpenAI(api_key="sk-openai-secret", base_url="http://openai.test/")
         caesura_client = create_caesura(
-            client,
-            CaesuraOpenAIOptions(base_url="http://caesura.test", api_key="sk-caesura-secret", mode="sync")
+            client, CaesuraOpenAIOptions(base_url="http://caesura.test", api_key="sk-caesura-secret", mode="sync")
         )
 
         oai_route = respx.post("http://openai.test/chat/completions").mock(
             return_value=httpx.Response(200, json={"choices": [{"message": {"content": "hi"}}]})
         )
-        cae_route = respx.post("http://caesura.test/api/analyze").mock(
-            return_value=httpx.Response(200, json={})
-        )
+        cae_route = respx.post("http://caesura.test/api/analyze").mock(return_value=httpx.Response(200, json={}))
 
         caesura_client.chat.completions.create(
             model="gpt-4o",
@@ -81,14 +77,14 @@ class TestAsyncWrapper:
     @respx.mock
     async def test_strips_caesura_conversation_id(self) -> None:
         client = AsyncOpenAI(api_key="test-key", base_url="http://openai.test/")
-        caesura_client = create_async_caesura(client, CaesuraOpenAIOptions(base_url="http://caesura.test", api_key="c-key"))
+        caesura_client = create_async_caesura(
+            client, CaesuraOpenAIOptions(base_url="http://caesura.test", api_key="c-key")
+        )
 
         oai_route = respx.post("http://openai.test/chat/completions").mock(
             return_value=httpx.Response(200, json={"choices": [{"message": {"content": "hi"}}]})
         )
-        respx.post("http://caesura.test/api/analyze").mock(
-            return_value=httpx.Response(200, json={})
-        )
+        respx.post("http://caesura.test/api/analyze").mock(return_value=httpx.Response(200, json={}))
 
         await caesura_client.chat.completions.create(
             model="gpt-4o",
@@ -98,5 +94,6 @@ class TestAsyncWrapper:
 
         req = oai_route.calls.last.request
         import json
+
         body = json.loads(req.content)
         assert "caesura_conversation_id" not in body

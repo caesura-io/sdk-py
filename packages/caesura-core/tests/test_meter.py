@@ -10,9 +10,30 @@ class TestCreditMeter:
     def test_records_credits_and_tracks_totals(self) -> None:
         meter = create_credit_meter()
 
-        info1 = CreditUsageInfo(credits=5, conversation_id="conv-1", query_turn=1, recommendation_id="rec-1", is_same=False, timestamp_ms=1000)
-        info2 = CreditUsageInfo(credits=10, conversation_id="conv-1", query_turn=2, recommendation_id="rec-2", is_same=True, timestamp_ms=2000)
-        info3 = CreditUsageInfo(credits=7, conversation_id="conv-2", query_turn=1, recommendation_id="rec-3", is_same=False, timestamp_ms=3000)
+        info1 = CreditUsageInfo(
+            credits=5,
+            conversation_id="conv-1",
+            query_turn=1,
+            recommendation_id="rec-1",
+            is_same=False,
+            timestamp_ms=1000,
+        )
+        info2 = CreditUsageInfo(
+            credits=10,
+            conversation_id="conv-1",
+            query_turn=2,
+            recommendation_id="rec-2",
+            is_same=True,
+            timestamp_ms=2000,
+        )
+        info3 = CreditUsageInfo(
+            credits=7,
+            conversation_id="conv-2",
+            query_turn=1,
+            recommendation_id="rec-3",
+            is_same=False,
+            timestamp_ms=3000,
+        )
 
         meter.record(info1)
         meter.record(info2)
@@ -44,7 +65,14 @@ class TestCreditMeter:
 
     def test_respects_keep_events_false(self) -> None:
         meter = create_credit_meter(CreditMeterOptions(keep_events=False))
-        info = CreditUsageInfo(credits=5, conversation_id="conv-1", query_turn=1, recommendation_id="rec-1", is_same=False, timestamp_ms=1000)
+        info = CreditUsageInfo(
+            credits=5,
+            conversation_id="conv-1",
+            query_turn=1,
+            recommendation_id="rec-1",
+            is_same=False,
+            timestamp_ms=1000,
+        )
 
         meter.record(info)
 
@@ -58,9 +86,15 @@ class TestCreditMeter:
     def test_respects_max_events_fifo_eviction(self) -> None:
         meter = create_credit_meter(CreditMeterOptions(max_events=2))
 
-        info1 = CreditUsageInfo(credits=1, conversation_id="conv-1", query_turn=1, recommendation_id="rec-1", timestamp_ms=1000)
-        info2 = CreditUsageInfo(credits=2, conversation_id="conv-1", query_turn=2, recommendation_id="rec-2", timestamp_ms=2000)
-        info3 = CreditUsageInfo(credits=3, conversation_id="conv-1", query_turn=3, recommendation_id="rec-3", timestamp_ms=3000)
+        info1 = CreditUsageInfo(
+            credits=1, conversation_id="conv-1", query_turn=1, recommendation_id="rec-1", timestamp_ms=1000
+        )
+        info2 = CreditUsageInfo(
+            credits=2, conversation_id="conv-1", query_turn=2, recommendation_id="rec-2", timestamp_ms=2000
+        )
+        info3 = CreditUsageInfo(
+            credits=3, conversation_id="conv-1", query_turn=3, recommendation_id="rec-3", timestamp_ms=3000
+        )
 
         meter.record(info1)
         meter.record(info2)
@@ -79,8 +113,16 @@ class TestCreditMeter:
 
     def test_reset_per_conversation(self) -> None:
         meter = create_credit_meter()
-        meter.record(CreditUsageInfo(credits=10, conversation_id="conv-1", query_turn=1, recommendation_id="rec-1", timestamp_ms=1000))
-        meter.record(CreditUsageInfo(credits=20, conversation_id="conv-2", query_turn=1, recommendation_id="rec-2", timestamp_ms=2000))
+        meter.record(
+            CreditUsageInfo(
+                credits=10, conversation_id="conv-1", query_turn=1, recommendation_id="rec-1", timestamp_ms=1000
+            )
+        )
+        meter.record(
+            CreditUsageInfo(
+                credits=20, conversation_id="conv-2", query_turn=1, recommendation_id="rec-2", timestamp_ms=2000
+            )
+        )
 
         assert meter.total() == 30
 
@@ -94,8 +136,16 @@ class TestCreditMeter:
 
     def test_reset_all(self) -> None:
         meter = create_credit_meter()
-        meter.record(CreditUsageInfo(credits=10, conversation_id="conv-1", query_turn=1, recommendation_id="rec-1", timestamp_ms=1000))
-        meter.record(CreditUsageInfo(credits=20, conversation_id="conv-2", query_turn=1, recommendation_id="rec-2", timestamp_ms=2000))
+        meter.record(
+            CreditUsageInfo(
+                credits=10, conversation_id="conv-1", query_turn=1, recommendation_id="rec-1", timestamp_ms=1000
+            )
+        )
+        meter.record(
+            CreditUsageInfo(
+                credits=20, conversation_id="conv-2", query_turn=1, recommendation_id="rec-2", timestamp_ms=2000
+            )
+        )
 
         meter.reset()
         assert meter.total() == 0

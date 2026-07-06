@@ -115,7 +115,7 @@ class CreditMeter:
         target_conv: str | None = None
         if filter_conv:
             target_conv = str(conversation_id) if isinstance(conversation_id, str) and conversation_id else "(none)"
-        
+
         target_same: bool | None = None
         if filter_same:
             target_same = bool(is_same)

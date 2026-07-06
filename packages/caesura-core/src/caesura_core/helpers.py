@@ -150,7 +150,7 @@ def select_active(
         recs = [r for r in recs if r.created_at_ms >= cutoff]
 
     if inject.keep_last != "all":
-        recs = list(recs[-inject.keep_last:])
+        recs = list(recs[-inject.keep_last :])
     else:
         recs = list(recs)
 

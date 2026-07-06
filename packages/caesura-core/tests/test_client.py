@@ -96,9 +96,7 @@ class TestCaesuraClient:
 
     @respx.mock
     def test_sends_correct_authorization_header(self) -> None:
-        route = respx.post("http://localhost:3000/api/analyze").mock(
-            return_value=httpx.Response(200, json={})
-        )
+        route = respx.post("http://localhost:3000/api/analyze").mock(return_value=httpx.Response(200, json={}))
 
         client = CaesuraClient("http://localhost:3000", "my-caesura-key", 5000)
         client.analyze(AnalyzeRequestBody(messages=[]))

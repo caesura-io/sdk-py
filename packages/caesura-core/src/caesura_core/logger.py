@@ -112,9 +112,7 @@ def create_debug_logger(options: DebugLoggerOptions | None = None) -> Callable[[
             )
         elif isinstance(event, SkippedEvent):
             log_fn(
-                f"{prefix} Conversation: {event.conversation_id},"
-                f" Turn: {event.turn},"
-                f" Reason: {event.reason}",
+                f"{prefix} Conversation: {event.conversation_id}, Turn: {event.turn}, Reason: {event.reason}",
             )
         elif isinstance(event, BufferedEvent):
             log_fn(
@@ -129,7 +127,9 @@ def create_debug_logger(options: DebugLoggerOptions | None = None) -> Callable[[
                 " (Duplicate or empty recommendation)",
             )
         elif isinstance(event, InjectedEvent):
-            blocks = _process_payload([{"recommendationId": b.recommendation_id, "text": b.text, "index": b.index} for b in event.blocks])
+            blocks = _process_payload(
+                [{"recommendationId": b.recommendation_id, "text": b.text, "index": b.index} for b in event.blocks]
+            )
             indices = ", ".join(str(i) for i in sorted({b.index for b in event.blocks}))
             log_fn(
                 f"{prefix} Conversation: {event.conversation_id},"
@@ -151,25 +151,32 @@ def create_debug_logger(options: DebugLoggerOptions | None = None) -> Callable[[
 def _resolve_log_fn(logger: Any) -> Callable[..., None]:
     """Resolve a logger option into a callable."""
     if logger is None:
+
         def _default_log(message: str, meta: Any = None) -> None:
             if meta is not None:
                 print(message, meta)
             else:
                 print(message)
+
         return _default_log
 
     if callable(logger) and not isinstance(logger, type):
         from typing import cast
+
         return cast(Callable[..., None], logger)
 
     if hasattr(logger, "log") and callable(logger.log):
+
         def _log_adapter(message: str, meta: Any = None) -> None:
             logger.log(message, meta)
+
         return _log_adapter
 
     if hasattr(logger, "info") and callable(logger.info):
+
         def _info_adapter(message: str, meta: Any = None) -> None:
             logger.info(message, meta)
+
         return _info_adapter
 
     def _fallback(message: str, meta: Any = None) -> None:
@@ -177,4 +184,5 @@ def _resolve_log_fn(logger: Any) -> Callable[..., None]:
             print(message, meta)
         else:
             print(message)
+
     return _fallback

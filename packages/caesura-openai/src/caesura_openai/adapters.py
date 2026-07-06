@@ -23,11 +23,7 @@ def get_message_text(message: dict[str, Any]) -> str:
         return content
 
     if isinstance(content, list):
-        text_parts = [
-            part.get("text", "")
-            for part in content
-            if isinstance(part, dict) and part.get("type") == "text"
-        ]
+        text_parts = [part.get("text", "") for part in content if isinstance(part, dict) and part.get("type") == "text"]
         return "\n".join(text_parts)
 
     return ""
@@ -119,7 +115,9 @@ def inject_blocks_openai(
     if inject.placement == "end":
         for b in blocks:
             result.append({"role": inject.as_role, "content": b["text"]})
-            injected.append(InjectedBlock(recommendation_id=b["recommendation_id"], text=b["text"], index=len(result) - 1))
+            injected.append(
+                InjectedBlock(recommendation_id=b["recommendation_id"], text=b["text"], index=len(result) - 1)
+            )
         return result, injected
 
     # placement == 'after-last-analyzed' -> interleave them chronologically
@@ -150,14 +148,23 @@ def inject_blocks_openai(
 
         if pos is not None:
             for b in group_blocks:
-                insertions.append({"index": pos + 1, "text": b["text"], "block_index": blocks.index(b), "rec_id": b["recommendation_id"]})
+                insertions.append(
+                    {
+                        "index": pos + 1,
+                        "text": b["text"],
+                        "block_index": blocks.index(b),
+                        "rec_id": b["recommendation_id"],
+                    }
+                )
         else:
             if latest_unanchored_turn is None:
                 latest_unanchored_turn = turn
 
     if latest_unanchored_turn is not None:
         for b in turn_groups[latest_unanchored_turn]:
-            insertions.append({"index": 0, "text": b["text"], "block_index": blocks.index(b), "rec_id": b["recommendation_id"]})
+            insertions.append(
+                {"index": 0, "text": b["text"], "block_index": blocks.index(b), "rec_id": b["recommendation_id"]}
+            )
 
     grouped_insertions: dict[int, dict[str, list[Any]]] = {}
     for ins in insertions:

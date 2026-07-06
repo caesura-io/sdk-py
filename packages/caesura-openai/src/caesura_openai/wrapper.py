@@ -91,14 +91,16 @@ class _CaesuraResponses:
         user_input = kwargs.get("input")
         if isinstance(user_input, str):
             from caesura_core.types import AnalyzeMessage
+
             collected.append(AnalyzeMessage(speaker_role="user", text=user_input))
         elif isinstance(user_input, list):
-             from caesura_core.types import AnalyzeMessage
+            from caesura_core.types import AnalyzeMessage
 
-             from caesura_openai.adapters import get_message_text
-             text = get_message_text({"content": user_input})
-             if text:
-                 collected.append(AnalyzeMessage(speaker_role="user", text=text))
+            from caesura_openai.adapters import get_message_text
+
+            text = get_message_text({"content": user_input})
+            if text:
+                collected.append(AnalyzeMessage(speaker_role="user", text=text))
 
         self._engine.observe(conv_id, collected)
 
@@ -123,7 +125,10 @@ class _CaesuraResponses:
                 kwargs["instructions"] = f"{skill}\n\n{combined_blocks}"
 
             from caesura_core.types import InjectedBlock
-            injected = [InjectedBlock(recommendation_id=b["recommendation_id"], text=b["text"], index=-1) for b in blocks]
+
+            injected = [
+                InjectedBlock(recommendation_id=b["recommendation_id"], text=b["text"], index=-1) for b in blocks
+            ]
             self._engine.emit_event(
                 InjectedEvent(
                     conversation_id=conv_id,
@@ -230,14 +235,16 @@ class _AsyncCaesuraResponses:
         user_input = kwargs.get("input")
         if isinstance(user_input, str):
             from caesura_core.types import AnalyzeMessage
+
             collected.append(AnalyzeMessage(speaker_role="user", text=user_input))
         elif isinstance(user_input, list):
-             from caesura_core.types import AnalyzeMessage
+            from caesura_core.types import AnalyzeMessage
 
-             from caesura_openai.adapters import get_message_text
-             text = get_message_text({"content": user_input})
-             if text:
-                 collected.append(AnalyzeMessage(speaker_role="user", text=text))
+            from caesura_openai.adapters import get_message_text
+
+            text = get_message_text({"content": user_input})
+            if text:
+                collected.append(AnalyzeMessage(speaker_role="user", text=text))
 
         await self._engine.observe(conv_id, collected)
 
@@ -259,7 +266,10 @@ class _AsyncCaesuraResponses:
                 kwargs["instructions"] = f"{skill}\n\n{combined_blocks}"
 
             from caesura_core.types import InjectedBlock
-            injected = [InjectedBlock(recommendation_id=b["recommendation_id"], text=b["text"], index=-1) for b in blocks]
+
+            injected = [
+                InjectedBlock(recommendation_id=b["recommendation_id"], text=b["text"], index=-1) for b in blocks
+            ]
             self._engine.emit_event(
                 InjectedEvent(
                     conversation_id=conv_id,

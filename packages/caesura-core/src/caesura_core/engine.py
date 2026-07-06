@@ -147,11 +147,13 @@ class CaesuraEngine:
         should_query, skip_reason = self._should_query(state, collected, now)
 
         if not should_query:
-            self.emit_event(SkippedEvent(
-                conversation_id=conv_id,
-                turn=state.turn,
-                reason=skip_reason,
-            ))
+            self.emit_event(
+                SkippedEvent(
+                    conversation_id=conv_id,
+                    turn=state.turn,
+                    reason=skip_reason,
+                )
+            )
             return
 
         if self._cfg.mode == "sync":
@@ -174,8 +176,7 @@ class CaesuraEngine:
         """Check cadence gates.  Returns (should_query, skip_reason)."""
         turns_due = state.turn - state.last_query_turn >= self._cfg.cadence.every_turns
         seconds_due = (
-            self._cfg.cadence.every_seconds <= 0
-            or now - state.last_query_ms >= self._cfg.cadence.every_seconds * 1000
+            self._cfg.cadence.every_seconds <= 0 or now - state.last_query_ms >= self._cfg.cadence.every_seconds * 1000
         )
         should_query = len(collected) > 0 and turns_due and seconds_due and not state.in_flight
 
@@ -217,24 +218,28 @@ class CaesuraEngine:
                 similarity_threshold=self._cfg.similarity_threshold,
             )
 
-            self.emit_event(RequestEvent(
-                conversation_id=conv_id,
-                query_turn=query_turn,
-                body=body,
-                include_credit_usage=self._cfg.include_credit_usage,
-            ))
+            self.emit_event(
+                RequestEvent(
+                    conversation_id=conv_id,
+                    query_turn=query_turn,
+                    body=body,
+                    include_credit_usage=self._cfg.include_credit_usage,
+                )
+            )
 
             start_time = time.time() * 1000
             result = self._client.analyze(body, include_credit_usage=self._cfg.include_credit_usage)
             duration_ms = time.time() * 1000 - start_time
 
-            self.emit_event(ResponseEvent(
-                conversation_id=conv_id,
-                query_turn=query_turn,
-                analysis=result.analysis,
-                credit_usage=result.credit_usage,
-                duration_ms=duration_ms,
-            ))
+            self.emit_event(
+                ResponseEvent(
+                    conversation_id=conv_id,
+                    query_turn=query_turn,
+                    analysis=result.analysis,
+                    credit_usage=result.credit_usage,
+                    duration_ms=duration_ms,
+                )
+            )
 
             rec: StoredRecommendation | None = None
 
@@ -249,35 +254,43 @@ class CaesuraEngine:
                     created_at_turn=query_turn,
                 )
                 self._store.add(conv_id, [rec])
-                self.emit_event(BufferedEvent(
-                    conversation_id=conv_id,
-                    query_turn=query_turn,
-                    recommendation_id=rec.id,
-                ))
+                self.emit_event(
+                    BufferedEvent(
+                        conversation_id=conv_id,
+                        query_turn=query_turn,
+                        recommendation_id=rec.id,
+                    )
+                )
             else:
-                self.emit_event(DedupedEvent(
-                    conversation_id=conv_id,
-                    query_turn=query_turn,
-                ))
+                self.emit_event(
+                    DedupedEvent(
+                        conversation_id=conv_id,
+                        query_turn=query_turn,
+                    )
+                )
 
             if result.credit_usage is not None and self._cfg.on_credit_usage:
                 try:
-                    self._cfg.on_credit_usage(CreditUsageInfo(
-                        credits=result.credit_usage,
-                        conversation_id=conv_id,
-                        query_turn=query_turn,
-                        recommendation_id=rec.id if rec else None,
-                        is_same=result.analysis.is_same,
-                        timestamp_ms=time.time() * 1000,
-                    ))
+                    self._cfg.on_credit_usage(
+                        CreditUsageInfo(
+                            credits=result.credit_usage,
+                            conversation_id=conv_id,
+                            query_turn=query_turn,
+                            recommendation_id=rec.id if rec else None,
+                            is_same=result.analysis.is_same,
+                            timestamp_ms=time.time() * 1000,
+                        )
+                    )
                 except Exception as e:
                     self._cfg.on_error(e)
 
         except Exception as e:
-            self.emit_event(ErrorEvent(
-                conversation_id=conv_id,
-                error=e,
-            ))
+            self.emit_event(
+                ErrorEvent(
+                    conversation_id=conv_id,
+                    error=e,
+                )
+            )
             self._cfg.on_error(e)
         finally:
             state.in_flight = False
@@ -335,13 +348,13 @@ class AsyncCaesuraEngine:
 
         turns_due = state.turn - state.last_query_turn >= self._cfg.cadence.every_turns
         seconds_due = (
-            self._cfg.cadence.every_seconds <= 0
-            or now - state.last_query_ms >= self._cfg.cadence.every_seconds * 1000
+            self._cfg.cadence.every_seconds <= 0 or now - state.last_query_ms >= self._cfg.cadence.every_seconds * 1000
         )
         should_query = len(collected) > 0 and turns_due and seconds_due and not state.in_flight
 
         if not should_query:
             from typing import Literal
+
             reason: Literal["no-messages", "in-flight", "cadence-turns", "cadence-seconds"]
             if len(collected) == 0:
                 reason = "no-messages"
@@ -351,11 +364,13 @@ class AsyncCaesuraEngine:
                 reason = "cadence-turns"
             else:
                 reason = "cadence-seconds"
-            self.emit_event(SkippedEvent(
-                conversation_id=conv_id,
-                turn=state.turn,
-                reason=reason,
-            ))
+            self.emit_event(
+                SkippedEvent(
+                    conversation_id=conv_id,
+                    turn=state.turn,
+                    reason=reason,
+                )
+            )
             return
 
         if self._cfg.mode == "sync":
@@ -389,24 +404,28 @@ class AsyncCaesuraEngine:
                 similarity_threshold=self._cfg.similarity_threshold,
             )
 
-            self.emit_event(RequestEvent(
-                conversation_id=conv_id,
-                query_turn=query_turn,
-                body=body,
-                include_credit_usage=self._cfg.include_credit_usage,
-            ))
+            self.emit_event(
+                RequestEvent(
+                    conversation_id=conv_id,
+                    query_turn=query_turn,
+                    body=body,
+                    include_credit_usage=self._cfg.include_credit_usage,
+                )
+            )
 
             start_time = time.time() * 1000
             result = await self._client.analyze(body, include_credit_usage=self._cfg.include_credit_usage)
             duration_ms = time.time() * 1000 - start_time
 
-            self.emit_event(ResponseEvent(
-                conversation_id=conv_id,
-                query_turn=query_turn,
-                analysis=result.analysis,
-                credit_usage=result.credit_usage,
-                duration_ms=duration_ms,
-            ))
+            self.emit_event(
+                ResponseEvent(
+                    conversation_id=conv_id,
+                    query_turn=query_turn,
+                    analysis=result.analysis,
+                    credit_usage=result.credit_usage,
+                    duration_ms=duration_ms,
+                )
+            )
 
             rec: StoredRecommendation | None = None
 
@@ -420,35 +439,43 @@ class AsyncCaesuraEngine:
                     created_at_turn=query_turn,
                 )
                 self._store.add(conv_id, [rec])
-                self.emit_event(BufferedEvent(
-                    conversation_id=conv_id,
-                    query_turn=query_turn,
-                    recommendation_id=rec.id,
-                ))
+                self.emit_event(
+                    BufferedEvent(
+                        conversation_id=conv_id,
+                        query_turn=query_turn,
+                        recommendation_id=rec.id,
+                    )
+                )
             else:
-                self.emit_event(DedupedEvent(
-                    conversation_id=conv_id,
-                    query_turn=query_turn,
-                ))
+                self.emit_event(
+                    DedupedEvent(
+                        conversation_id=conv_id,
+                        query_turn=query_turn,
+                    )
+                )
 
             if result.credit_usage is not None and self._cfg.on_credit_usage:
                 try:
-                    self._cfg.on_credit_usage(CreditUsageInfo(
-                        credits=result.credit_usage,
-                        conversation_id=conv_id,
-                        query_turn=query_turn,
-                        recommendation_id=rec.id if rec else None,
-                        is_same=result.analysis.is_same,
-                        timestamp_ms=time.time() * 1000,
-                    ))
+                    self._cfg.on_credit_usage(
+                        CreditUsageInfo(
+                            credits=result.credit_usage,
+                            conversation_id=conv_id,
+                            query_turn=query_turn,
+                            recommendation_id=rec.id if rec else None,
+                            is_same=result.analysis.is_same,
+                            timestamp_ms=time.time() * 1000,
+                        )
+                    )
                 except Exception as e:
                     self._cfg.on_error(e)
 
         except Exception as e:
-            self.emit_event(ErrorEvent(
-                conversation_id=conv_id,
-                error=e,
-            ))
+            self.emit_event(
+                ErrorEvent(
+                    conversation_id=conv_id,
+                    error=e,
+                )
+            )
             self._cfg.on_error(e)
         finally:
             state.in_flight = False

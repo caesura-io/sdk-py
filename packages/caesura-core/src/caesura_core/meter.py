@@ -6,11 +6,13 @@ Drop-in handler for ``config.on_credit_usage``.
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import Any
+from typing import TYPE_CHECKING
 
 _UNSET = object()
 
-from caesura_core.types import CreditUsageInfo
+
+if TYPE_CHECKING:
+    from caesura_core.types import CreditUsageInfo
 
 
 @dataclass
@@ -106,9 +108,8 @@ class CreditMeter:
                     actual = e.conversation_id or "(none)"
                     if actual != expected:
                         continue
-                if filter_same:
-                    if bool(e.is_same) != bool(is_same):
-                        continue
+                if filter_same and bool(e.is_same) != bool(is_same):
+                    continue
                 count += 1
             return count
 

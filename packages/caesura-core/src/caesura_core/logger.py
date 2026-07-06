@@ -8,7 +8,7 @@ from __future__ import annotations
 
 import datetime
 from collections.abc import Callable, Sequence
-from typing import Any, Protocol, Union, runtime_checkable
+from typing import Any, Protocol, runtime_checkable
 
 from caesura_core.types import (
     BufferedEvent,
@@ -32,12 +32,7 @@ class _LoggerWithInfo(Protocol):
     def info(self, message: str, meta: Any = ...) -> None: ...
 
 
-LoggerType = Union[
-    Callable[[str, Any], None],
-    Callable[[str], None],
-    _LoggerWithLog,
-    _LoggerWithInfo,
-]
+LoggerType = Callable[[str, Any], None] | Callable[[str], None] | _LoggerWithLog | _LoggerWithInfo
 
 
 class DebugLoggerOptions:
@@ -163,7 +158,7 @@ def _resolve_log_fn(logger: Any) -> Callable[..., None]:
     if callable(logger) and not isinstance(logger, type):
         from typing import cast
 
-        return cast(Callable[..., None], logger)
+        return cast("Callable[..., None]", logger)
 
     if hasattr(logger, "log") and callable(logger.log):
 

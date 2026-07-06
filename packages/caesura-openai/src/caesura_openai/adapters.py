@@ -3,10 +3,12 @@
 from __future__ import annotations
 
 import json
-from collections.abc import Callable, Iterable
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 from caesura_core.types import AnalyzeMessage, InjectedBlock, ResolvedInjectConfig
+
+if TYPE_CHECKING:
+    from collections.abc import Callable, Iterable
 
 
 def get_message_text(message: dict[str, Any]) -> str:
@@ -176,21 +178,20 @@ def inject_blocks_openai(
         grouped_insertions[idx]["rec_ids"].append(ins["rec_id"])
 
     sorted_indices = sorted(grouped_insertions.keys())
-    offset = 0
 
-    for idx in sorted_indices:
+    for offset, idx in enumerate(sorted_indices):
         group = grouped_insertions[idx]
-        sorted_group = sorted(zip(group["block_indices"], group["texts"], group["rec_ids"]), key=lambda x: x[0])
+        sorted_group = sorted(
+            zip(group["block_indices"], group["texts"], group["rec_ids"], strict=False), key=lambda x: x[0]
+        )
         merged_text = "\n\n".join(g[1] for g in sorted_group)
 
         insert_pos = idx + offset
         msg = {"role": inject.as_role, "content": merged_text}
         result.insert(insert_pos, msg)
 
-        for bi, _, rec_id in sorted_group:
+        for _bi, _, rec_id in sorted_group:
             injected.append(InjectedBlock(recommendation_id=rec_id, text=merged_text, index=insert_pos))
-
-        offset += 1
 
     # Ensure injected list matches order of original blocks for testing consistency
     injected_ordered = [None] * len(blocks)

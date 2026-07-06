@@ -8,8 +8,7 @@ from __future__ import annotations
 
 import json
 import re
-from collections.abc import Sequence
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 from caesura_core.types import (
     AnalyzeMessage,
@@ -20,8 +19,13 @@ from caesura_core.types import (
     TtlTurns,
 )
 
-if True:  # TYPE_CHECKING guard that works at runtime too
+if TYPE_CHECKING:
+    from collections.abc import Sequence
+
     from caesura_core.store import ConversationState, StoredRecommendation
+
+if True:  # TYPE_CHECKING guard that works at runtime too
+    pass
 
 
 # ---------------------------------------------------------------------------
@@ -149,10 +153,7 @@ def select_active(
         cutoff = now_ms - inject.ttl.seconds * 1000
         recs = [r for r in recs if r.created_at_ms >= cutoff]
 
-    if inject.keep_last != "all":
-        recs = list(recs[-inject.keep_last :])
-    else:
-        recs = list(recs)
+    recs = list(recs[-inject.keep_last :]) if inject.keep_last != "all" else list(recs)
 
     return recs
 

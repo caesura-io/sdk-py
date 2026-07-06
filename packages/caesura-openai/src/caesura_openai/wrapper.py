@@ -8,14 +8,16 @@ all other attributes to the underlying OpenAI client via ``__getattr__``.
 from __future__ import annotations
 
 import time
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 from caesura_core.engine import AsyncCaesuraEngine, CaesuraEngine, create_async_caesura_engine, create_caesura_engine
 from caesura_core.helpers import hash_message, render_block, select_active
 from caesura_core.types import InjectedEvent
 
 from caesura_openai.adapters import apply_skill_prompt_openai, collect_openai_messages, inject_blocks_openai
-from caesura_openai.types import CaesuraOpenAIOptions
+
+if TYPE_CHECKING:
+    from caesura_openai.types import CaesuraOpenAIOptions
 
 
 class _CaesuraCompletions:

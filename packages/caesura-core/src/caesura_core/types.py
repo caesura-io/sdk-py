@@ -3,9 +3,11 @@
 from __future__ import annotations
 
 import sys
-from collections.abc import Callable
 from dataclasses import dataclass, field
-from typing import Any, Union
+from typing import TYPE_CHECKING, Any
+
+if TYPE_CHECKING:
+    from collections.abc import Callable
 
 if sys.version_info >= (3, 11):
     from typing import Literal
@@ -148,7 +150,7 @@ class TtlSeconds:
     type: Literal["seconds"] = "seconds"
 
 
-TtlPolicy = Union[TtlNone, TtlTurns, TtlSeconds]
+TtlPolicy = TtlNone | TtlTurns | TtlSeconds
 """TTL policy for buffered recommendations."""
 
 
@@ -341,15 +343,7 @@ class ErrorEvent:
     error: Any = None
 
 
-CaesuraEvent = Union[
-    RequestEvent,
-    ResponseEvent,
-    SkippedEvent,
-    BufferedEvent,
-    DedupedEvent,
-    InjectedEvent,
-    ErrorEvent,
-]
+CaesuraEvent = RequestEvent | ResponseEvent | SkippedEvent | BufferedEvent | DedupedEvent | InjectedEvent | ErrorEvent
 """Structured lifecycle events for debugging/observability."""
 
 

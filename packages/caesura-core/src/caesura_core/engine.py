@@ -313,6 +313,7 @@ class AsyncCaesuraEngine:
         self._cfg = resolve_config(config)
         self._store: CaesuraStore = config.store if config.store is not None else MemoryCaesuraStore()
         self._client = AsyncCaesuraClient(self._cfg.base_url, self._cfg.api_key, self._cfg.timeout_ms)
+        self._bg_tasks: set[asyncio.Task[Any]] = set()
 
     @property
     def config(self) -> ResolvedConfig:
@@ -377,7 +378,9 @@ class AsyncCaesuraEngine:
             await self._do_observe(conv_id, collected, state, now)
         else:
             # Fire-and-forget asyncio task
-            asyncio.create_task(self._do_observe(conv_id, collected, state, now))
+            task = asyncio.create_task(self._do_observe(conv_id, collected, state, now))
+            self._bg_tasks.add(task)
+            task.add_done_callback(self._bg_tasks.discard)
 
     async def _do_observe(
         self,

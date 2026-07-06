@@ -9,9 +9,10 @@ from __future__ import annotations
 import threading
 import time
 from dataclasses import dataclass, field
-from typing import Protocol, runtime_checkable
+from typing import TYPE_CHECKING, Protocol, runtime_checkable
 
-from caesura_core.types import CaesuraAnalysis
+if TYPE_CHECKING:
+    from caesura_core.types import CaesuraAnalysis
 
 
 @dataclass

@@ -26,7 +26,7 @@ class PinCoreDependencyHook(MetadataHookInterface):
         match = re.search(r'^version\s*=\s*"([^"]+)"', content, re.MULTILINE)
         if not match:
             raise ValueError(f"Could not find version in {core_pyproject}")
-        
+
         core_version = match.group(1)
         major = core_version.split(".")[0]
         pinned_core = f"caesura-io-core>={core_version},<{int(major) + 1}.0.0"

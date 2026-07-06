@@ -88,7 +88,7 @@ wheels = [
 
 [[package]]
 name = "caesura-io-core"
-version = "0.1.0"
+version = "1.0.4"
 source = { editable = "packages/caesura-core" }
 dependencies = [
     { name = "httpx" },
@@ -99,7 +99,7 @@ requires-dist = [{ name = "httpx", specifier = ">=0.27" }]
 
 [[package]]
 name = "caesura-io-openai"
-version = "0.1.0"
+version = "1.0.4"
 source = { editable = "packages/caesura-openai" }
 dependencies = [
     { name = "caesura-io-core" },
@@ -114,7 +114,7 @@ requires-dist = [
 
 [[package]]
 name = "caesura-sdk-py"
-version = "0.0.0"
+version = "1.0.4"
 source = { virtual = "." }
 
 [package.dev-dependencies]

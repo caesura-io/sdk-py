@@ -213,7 +213,7 @@ class CaesuraEngine:
                 conversation_id=conv_id if self._cfg.persist else None,
                 session_id=conv_id if self._cfg.persist else None,
                 call_type=self._cfg.call_type,
-                persist=self._cfg.persist if self._cfg.persist else None,
+                persist=self._cfg.persist,
                 calculate_similarities=self._cfg.calculate_similarities,
                 similarity_threshold=self._cfg.similarity_threshold,
             )
@@ -402,7 +402,7 @@ class AsyncCaesuraEngine:
                 conversation_id=conv_id if self._cfg.persist else None,
                 session_id=conv_id if self._cfg.persist else None,
                 call_type=self._cfg.call_type,
-                persist=self._cfg.persist if self._cfg.persist else None,
+                persist=self._cfg.persist,
                 calculate_similarities=self._cfg.calculate_similarities,
                 similarity_threshold=self._cfg.similarity_threshold,
             )

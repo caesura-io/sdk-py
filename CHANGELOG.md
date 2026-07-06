@@ -1,6 +1,14 @@
 # CHANGELOG
 
 
+## v1.0.4 (2026-07-06)
+
+### Bug Fixes
+
+- Dynamic dependencies resolution
+  ([`dca4f56`](https://github.com/caesura-io/sdk-py/commit/dca4f56d0eb07a7626358272b6f4475f220e3c24))
+
+
 ## v1.0.3 (2026-07-06)
 
 ### Bug Fixes

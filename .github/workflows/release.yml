@@ -27,15 +27,24 @@ jobs:
       - name: Set up Python
         run: uv python install 3.10
 
-      - name: Version and Build
-        env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      - name: Semantic Release Version
+        id: release
+        uses: python-semantic-release/python-semantic-release@v9
+        with:
+          github_token: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Build packages
+        if: steps.release.outputs.released == 'true'
         run: |
-          uv tool install python-semantic-release
-          semantic-release version
           uv build --package caesura-io-core
           uv build --package caesura-io-openai
-          semantic-release publish
 
-      - name: Publish package distributions to PyPI
+      - name: Publish to GitHub
+        if: steps.release.outputs.released == 'true'
+        uses: python-semantic-release/publish-action@v9
+        with:
+          github_token: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Publish to PyPI
+        if: steps.release.outputs.released == 'true'
         uses: pypa/gh-action-pypi-publish@release/v1

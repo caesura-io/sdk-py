@@ -1,6 +1,6 @@
 [project]
 name = "caesura-io-core"
-version = "0.1.0"
+version = "1.0.2"
 description = "Framework-agnostic core for Caesura — analyze, inject, and credit-metering logic shared across SDK integrations."
 readme = "README.md"
 license = "Apache-2.0"

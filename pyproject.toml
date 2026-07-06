@@ -1,6 +1,6 @@
 [project]
 name = "caesura-sdk-py"
-version = "0.0.0"
+version = "1.0.2"
 description = "Caesura SDKs for Python AI frameworks"
 requires-python = ">=3.10"
 

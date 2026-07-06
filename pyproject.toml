@@ -36,3 +36,17 @@ warn_unused_configs = true
 [tool.pytest.ini_options]
 asyncio_mode = "auto"
 testpaths = ["packages/caesura-core/tests", "packages/caesura-openai/tests"]
+
+[tool.semantic_release]
+version_toml = [
+    "pyproject.toml:project.version",
+    "packages/caesura-core/pyproject.toml:project.version",
+    "packages/caesura-openai/pyproject.toml:project.version",
+]
+commit_message = "chore(release): v{version}"
+
+[tool.semantic_release.branches.main]
+match = "main"
+
+[tool.semantic_release.commit_parser_options]
+allowed_tags = ["feat", "fix", "perf", "refactor", "docs", "chore", "ci"]

@@ -1,0 +1,108 @@
+[
+  {
+    "name": "empty",
+    "messages": [],
+    "anchors": []
+  },
+  {
+    "name": "repeated customer",
+    "messages": [
+      {
+        "speakerRole": "user",
+        "speakerIndex": 1,
+        "speakerName": "Customer",
+        "text": "yes"
+      },
+      {
+        "speakerRole": "user",
+        "speakerIndex": 1,
+        "speakerName": "Customer",
+        "text": "yes"
+      },
+      {
+        "speakerRole": "user",
+        "speakerIndex": 1,
+        "speakerName": "Customer",
+        "text": "yes"
+      }
+    ],
+    "anchors": ["v1:1:1arsbkvn0pxxt", "v1:2:jnpzx9rqvuod", "v1:3:2kf34jznv6s5l"]
+  },
+  {
+    "name": "alternating participants",
+    "messages": [
+      {
+        "speakerRole": "user",
+        "speakerIndex": 1,
+        "speakerName": "Customer",
+        "text": "same"
+      },
+      {
+        "speakerRole": "user",
+        "speakerIndex": 0,
+        "speakerName": "Agent",
+        "text": "same"
+      },
+      {
+        "speakerRole": "user",
+        "speakerIndex": 1,
+        "speakerName": "Customer",
+        "text": "same"
+      },
+      {
+        "speakerRole": "user",
+        "speakerIndex": 0,
+        "speakerName": "Agent",
+        "text": "same"
+      }
+    ],
+    "anchors": [
+      "v1:1:2606cqjvx5sgo",
+      "v1:2:a190g83fav0x",
+      "v1:3:2kcervt1vycz8",
+      "v1:4:3vkn9t90981ul"
+    ]
+  },
+  {
+    "name": "unicode and escaping",
+    "messages": [
+      {
+        "speakerRole": "user",
+        "speakerIndex": 1,
+        "speakerName": "לקוח",
+        "text": "שלום 😊 \"quoted\"\nnext"
+      },
+      {
+        "speakerRole": "user",
+        "speakerIndex": 0,
+        "speakerName": "Agent",
+        "text": "café 🦊"
+      }
+    ],
+    "anchors": ["v1:1:wsgmgamcv0mo", "v1:2:17x51ao6cqn9m"]
+  },
+  {
+    "name": "same name different indices",
+    "messages": [
+      {
+        "speakerRole": "user",
+        "speakerIndex": 1,
+        "speakerName": "Shared",
+        "text": "same"
+      },
+      {
+        "speakerRole": "user",
+        "speakerIndex": 0,
+        "speakerName": "Shared",
+        "text": "same"
+      },
+      {
+        "speakerRole": "user",
+        "speakerIndex": 7,
+        "speakerName": "Shared",
+        "text": "same"
+      }
+    ],
+    "anchors": ["v1:1:rhjql4eymebl", "v1:2:3rwu6zpmjg9a", "v1:3:k7sc3nxp3gd8"]
+  }
+]

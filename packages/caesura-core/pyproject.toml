@@ -1,7 +1,7 @@
 [project]
 name = "caesura-io-core"
 version = "1.0.4"
-description = "Framework-agnostic core for Caesura — analyze, inject, and credit-metering logic shared across SDK integrations."
+description = "Framework-agnostic core for CaesuraO — analyze, inject, and credit-metering logic shared across SDK integrations."
 readme = "README.md"
 license = "Apache-2.0"
 requires-python = ">=3.10"

@@ -90,8 +90,8 @@ class CreditMeter:
 
     def count(
         self,
-        conversation_id: str | None | object = _UNSET,
-        is_same: bool | None | object = _UNSET,
+        conversation_id: str | object | None = _UNSET,
+        is_same: bool | object | None = _UNSET,
     ) -> int:
         """Number of analyze calls recorded (optionally filtered).
 
@@ -99,19 +99,6 @@ class CreditMeter:
         """
         filter_conv = conversation_id is not _UNSET
         filter_same = is_same is not _UNSET
-
-        if self._keep_events:
-            count = 0
-            for e in self._event_list:
-                if filter_conv:
-                    expected = conversation_id or "(none)"
-                    actual = e.conversation_id or "(none)"
-                    if actual != expected:
-                        continue
-                if filter_same and bool(e.is_same) != bool(is_same):
-                    continue
-                count += 1
-            return count
 
         target_conv: str | None = None
         if filter_conv:

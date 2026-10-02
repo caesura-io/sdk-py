@@ -6,14 +6,20 @@ on:
       - main
 
 jobs:
+  validation:
+    uses: ./.github/workflows/validate.yml
+    permissions:
+      contents: read
+
   release:
+    needs: validation
     name: Semantic Release
     runs-on: ubuntu-latest
     concurrency: release
     permissions:
       id-token: write
       contents: write
-    
+
     steps:
       - uses: actions/checkout@v4
         with:
@@ -38,6 +44,15 @@ jobs:
         run: |
           uv build --package caesura-io-core
           uv build --package caesura-io-openai
+
+      - name: Validate release artifacts before publishing
+        if: steps.release.outputs.released == 'true'
+        run: |
+          uvx twine check --strict dist/*
+          for major in 2 3; do
+            uv run --no-sync python scripts/check_distribution.py --openai "$major" --kind wheel
+            uv run --no-sync python scripts/check_distribution.py --openai "$major" --kind sdist
+          done
 
       - name: Publish to GitHub
         if: steps.release.outputs.released == 'true'

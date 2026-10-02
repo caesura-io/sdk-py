@@ -1,7 +1,7 @@
 """Transparent wrappers around the OpenAI Python SDK clients.
 
 These wrappers intercept calls to ``chat.completions.create`` and
-``responses.create`` to inject Caesura recommendations, while delegating
+``responses.create`` to inject CaesuraO recommendations, while delegating
 all other attributes to the underlying OpenAI client via ``__getattr__``.
 """
 
@@ -14,10 +14,87 @@ from caesura_core.engine import AsyncCaesuraEngine, CaesuraEngine, create_async_
 from caesura_core.helpers import hash_message, render_block, select_active
 from caesura_core.types import InjectedEvent
 
-from caesura_openai.adapters import apply_skill_prompt_openai, collect_openai_messages, inject_blocks_openai
+from caesura_openai.adapters import (
+    apply_skill_prompt_openai,
+    apply_skill_prompt_responses,
+    collect_openai_messages,
+    collect_openai_responses_messages,
+    inject_blocks_openai,
+    strip_injected_messages,
+)
 
 if TYPE_CHECKING:
+    from types import TracebackType
+
     from caesura_openai.types import CaesuraOpenAIOptions
+
+
+def _resolve_session(per_call: str | None, configured: str | None) -> str:
+    if per_call is not None:
+        return per_call
+    return configured if configured is not None else "default"
+
+
+def _clean_input(engine: CaesuraEngine | AsyncCaesuraEngine, conv_id: str, value: Any) -> Any:
+    if isinstance(value, list):
+        state = engine.store.get(conv_id)
+        known = state.injected_messages | {
+            (engine.config.inject.as_role, rec.injected_text)
+            for rec in state.recommendations
+            if rec.injected_text is not None
+            and not any(text == rec.injected_text for _, text in state.injected_messages)
+        }
+        return strip_injected_messages(value, known)
+    return value
+
+
+def _inject_guidance(
+    engine: CaesuraEngine | AsyncCaesuraEngine,
+    conv_id: str,
+    kwargs: dict[str, Any],
+    value: Any,
+    *,
+    responses: bool,
+) -> None:
+    # Evaluate TTL after foreground analysis has completed.
+    state = engine.store.get(conv_id)
+    config = engine.config.inject
+    active = select_active(state, config, time.time() * 1000)
+    blocks = render_block(active, config)
+    if responses:
+        instructions = apply_skill_prompt_responses(kwargs.get("instructions"), config)
+        if instructions is not None or "instructions" in kwargs:
+            kwargs["instructions"] = instructions
+        if isinstance(value, str):
+            messages = [{"role": "user", "content": value}]
+        elif isinstance(value, list):
+            messages = value
+        else:
+            messages = []
+    else:
+        messages, _ = apply_skill_prompt_openai(value, config)
+    messages, injected = inject_blocks_openai(messages, blocks, config, hash_message, engine.config.speaker_names)
+    if responses:
+        # Preserve the original input shape when no guidance needs inserting.
+        if injected or "input" in kwargs:
+            kwargs["input"] = messages if injected else value
+    else:
+        kwargs["messages"] = messages
+    for block in injected:
+        state.injected_messages.add((config.as_role, block.text))
+        for recommendation in active:
+            if recommendation.id == block.recommendation_id:
+                recommendation.injected_text = block.text
+                break
+    if injected:
+        engine.emit_event(
+            InjectedEvent(
+                conversation_id=conv_id,
+                turn=state.turn,
+                blocks=injected,
+                placement=config.placement,
+            )
+        )
 
 
 class _CaesuraCompletions:
@@ -26,33 +103,13 @@ class _CaesuraCompletions:
         self._engine = engine
 
     def create(self, *args: Any, **kwargs: Any) -> Any:
-        conv_id = kwargs.pop("caesura_conversation_id", self._engine.config.conversation_id)
-        if not conv_id:
-            return self._original.create(*args, **kwargs)
+        conv_id = _resolve_session(kwargs.pop("caesura_conversation_id", None), self._engine.config.conversation_id)
 
-        messages = list(kwargs.get("messages", []))
-        collected = collect_openai_messages(messages)
+        value = _clean_input(self._engine, conv_id, list(kwargs.get("messages", [])))
+        collected = collect_openai_messages(value, self._engine.config.speaker_names)
         self._engine.observe(conv_id, collected)
+        _inject_guidance(self._engine, conv_id, kwargs, value, responses=False)
 
-        state = self._engine.store.get(conv_id)
-        active = select_active(state, self._engine.config.inject, time.time() * 1000)
-        blocks = render_block(active, self._engine.config.inject)
-
-        messages, injected = inject_blocks_openai(messages, blocks, self._engine.config.inject, hash_message)
-        messages, _ = apply_skill_prompt_openai(messages, self._engine.config.inject)
-        kwargs["messages"] = messages
-
-        if injected:
-            self._engine.emit_event(
-                InjectedEvent(
-                    conversation_id=conv_id,
-                    turn=state.turn,
-                    blocks=injected,
-                    placement=self._engine.config.inject.placement,
-                )
-            )
-
-        state.turn += 1
         return self._original.create(*args, **kwargs)
 
     def __getattr__(self, name: str) -> Any:
@@ -78,69 +135,13 @@ class _CaesuraResponses:
         self._engine = engine
 
     def create(self, *args: Any, **kwargs: Any) -> Any:
-        # Note: The Responses API does not use 'messages' in the same way.
-        # This implementation aligns with the basic Responses API interception
-        # which injects the system prompt (instruction) but cannot interleave
-        # historical messages as easily.
-        conv_id = kwargs.pop("caesura_conversation_id", self._engine.config.conversation_id)
-        if not conv_id:
-            return self._original.create(*args, **kwargs)
+        conv_id = _resolve_session(kwargs.pop("caesura_conversation_id", None), self._engine.config.conversation_id)
 
-        # For Responses API, we treat 'input' as the user message if it's a string
-        # or object, but the collect step requires more context to be accurate.
-        # We perform a basic interception here.
-        collected = []
-        user_input = kwargs.get("input")
-        if isinstance(user_input, str):
-            from caesura_core.types import AnalyzeMessage
-
-            collected.append(AnalyzeMessage(speaker_role="user", text=user_input))
-        elif isinstance(user_input, list):
-            from caesura_core.types import AnalyzeMessage
-
-            from caesura_openai.adapters import get_message_text
-
-            text = get_message_text({"content": user_input})
-            if text:
-                collected.append(AnalyzeMessage(speaker_role="user", text=text))
-
+        value = _clean_input(self._engine, conv_id, kwargs.get("input"))
+        collected = collect_openai_responses_messages(value, self._engine.config.speaker_names)
         self._engine.observe(conv_id, collected)
+        _inject_guidance(self._engine, conv_id, kwargs, value, responses=True)
 
-        state = self._engine.store.get(conv_id)
-        active = select_active(state, self._engine.config.inject, time.time() * 1000)
-        blocks = render_block(active, self._engine.config.inject)
-
-        if blocks:
-            # Inject into the 'instructions' field for Responses API
-            # This is simpler than the Chat API because Responses API
-            # is instruction-driven per turn.
-            instructions = kwargs.get("instructions", "")
-            if not isinstance(instructions, str):
-                instructions = str(instructions)
-
-            skill = self._engine.config.inject.skill_prompt or ""
-            combined_blocks = "\n\n".join(b["text"] for b in blocks)
-
-            if instructions:
-                kwargs["instructions"] = f"{instructions}\n\n{skill}\n\n{combined_blocks}"
-            else:
-                kwargs["instructions"] = f"{skill}\n\n{combined_blocks}"
-
-            from caesura_core.types import InjectedBlock
-
-            injected = [
-                InjectedBlock(recommendation_id=b["recommendation_id"], text=b["text"], index=-1) for b in blocks
-            ]
-            self._engine.emit_event(
-                InjectedEvent(
-                    conversation_id=conv_id,
-                    turn=state.turn,
-                    blocks=injected,
-                    placement="end",
-                )
-            )
-
-        state.turn += 1
         return self._original.create(*args, **kwargs)
 
     def __getattr__(self, name: str) -> Any:
@@ -153,6 +154,21 @@ class CaesuraOpenAI:
     def __init__(self, client: Any, options: CaesuraOpenAIOptions) -> None:
         self._client = client
         self._engine = create_caesura_engine(options)
+
+    def __enter__(self) -> CaesuraOpenAI:
+        self._client.__enter__()
+        return self
+
+    def __exit__(
+        self, exc_type: type[BaseException] | None, exc_value: BaseException | None, traceback: TracebackType | None
+    ) -> None:
+        self._client.__exit__(exc_type, exc_value, traceback)
+
+    def create_conversation(
+        self, *, name: str | None = None, calendar_id: str | None = None, event_id: str | None = None
+    ) -> str:
+        """Create a CaesuraO conversation; reuse its ID as caesura_conversation_id on model calls."""
+        return self._engine.create_conversation(name=name, calendar_id=calendar_id, event_id=event_id)
 
     @property
     def chat(self) -> _CaesuraChat:
@@ -177,33 +193,13 @@ class _AsyncCaesuraCompletions:
         self._engine = engine
 
     async def create(self, *args: Any, **kwargs: Any) -> Any:
-        conv_id = kwargs.pop("caesura_conversation_id", self._engine.config.conversation_id)
-        if not conv_id:
-            return await self._original.create(*args, **kwargs)
+        conv_id = _resolve_session(kwargs.pop("caesura_conversation_id", None), self._engine.config.conversation_id)
 
-        messages = list(kwargs.get("messages", []))
-        collected = collect_openai_messages(messages)
+        value = _clean_input(self._engine, conv_id, list(kwargs.get("messages", [])))
+        collected = collect_openai_messages(value, self._engine.config.speaker_names)
         await self._engine.observe(conv_id, collected)
+        _inject_guidance(self._engine, conv_id, kwargs, value, responses=False)
 
-        state = self._engine.store.get(conv_id)
-        active = select_active(state, self._engine.config.inject, time.time() * 1000)
-        blocks = render_block(active, self._engine.config.inject)
-
-        messages, injected = inject_blocks_openai(messages, blocks, self._engine.config.inject, hash_message)
-        messages, _ = apply_skill_prompt_openai(messages, self._engine.config.inject)
-        kwargs["messages"] = messages
-
-        if injected:
-            self._engine.emit_event(
-                InjectedEvent(
-                    conversation_id=conv_id,
-                    turn=state.turn,
-                    blocks=injected,
-                    placement=self._engine.config.inject.placement,
-                )
-            )
-
-        state.turn += 1
         return await self._original.create(*args, **kwargs)
 
     def __getattr__(self, name: str) -> Any:
@@ -229,59 +225,13 @@ class _AsyncCaesuraResponses:
         self._engine = engine
 
     async def create(self, *args: Any, **kwargs: Any) -> Any:
-        conv_id = kwargs.pop("caesura_conversation_id", self._engine.config.conversation_id)
-        if not conv_id:
-            return await self._original.create(*args, **kwargs)
+        conv_id = _resolve_session(kwargs.pop("caesura_conversation_id", None), self._engine.config.conversation_id)
 
-        collected = []
-        user_input = kwargs.get("input")
-        if isinstance(user_input, str):
-            from caesura_core.types import AnalyzeMessage
-
-            collected.append(AnalyzeMessage(speaker_role="user", text=user_input))
-        elif isinstance(user_input, list):
-            from caesura_core.types import AnalyzeMessage
-
-            from caesura_openai.adapters import get_message_text
-
-            text = get_message_text({"content": user_input})
-            if text:
-                collected.append(AnalyzeMessage(speaker_role="user", text=text))
-
+        value = _clean_input(self._engine, conv_id, kwargs.get("input"))
+        collected = collect_openai_responses_messages(value, self._engine.config.speaker_names)
         await self._engine.observe(conv_id, collected)
+        _inject_guidance(self._engine, conv_id, kwargs, value, responses=True)
 
-        state = self._engine.store.get(conv_id)
-        active = select_active(state, self._engine.config.inject, time.time() * 1000)
-        blocks = render_block(active, self._engine.config.inject)
-
-        if blocks:
-            instructions = kwargs.get("instructions", "")
-            if not isinstance(instructions, str):
-                instructions = str(instructions)
-
-            skill = self._engine.config.inject.skill_prompt or ""
-            combined_blocks = "\n\n".join(b["text"] for b in blocks)
-
-            if instructions:
-                kwargs["instructions"] = f"{instructions}\n\n{skill}\n\n{combined_blocks}"
-            else:
-                kwargs["instructions"] = f"{skill}\n\n{combined_blocks}"
-
-            from caesura_core.types import InjectedBlock
-
-            injected = [
-                InjectedBlock(recommendation_id=b["recommendation_id"], text=b["text"], index=-1) for b in blocks
-            ]
-            self._engine.emit_event(
-                InjectedEvent(
-                    conversation_id=conv_id,
-                    turn=state.turn,
-                    blocks=injected,
-                    placement="end",
-                )
-            )
-
-        state.turn += 1
         return await self._original.create(*args, **kwargs)
 
     def __getattr__(self, name: str) -> Any:
@@ -294,6 +244,21 @@ class AsyncCaesuraOpenAI:
     def __init__(self, client: Any, options: CaesuraOpenAIOptions) -> None:
         self._client = client
         self._engine = create_async_caesura_engine(options)
+
+    async def __aenter__(self) -> AsyncCaesuraOpenAI:
+        await self._client.__aenter__()
+        return self
+
+    async def __aexit__(
+        self, exc_type: type[BaseException] | None, exc_value: BaseException | None, traceback: TracebackType | None
+    ) -> None:
+        await self._client.__aexit__(exc_type, exc_value, traceback)
+
+    async def create_conversation(
+        self, *, name: str | None = None, calendar_id: str | None = None, event_id: str | None = None
+    ) -> str:
+        """Create a CaesuraO conversation; reuse its ID as caesura_conversation_id on model calls."""
+        return await self._engine.create_conversation(name=name, calendar_id=calendar_id, event_id=event_id)
 
     @property
     def chat(self) -> _AsyncCaesuraChat:

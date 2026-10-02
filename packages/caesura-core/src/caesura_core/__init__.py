@@ -1,4 +1,4 @@
-"""caesura-core: Framework-agnostic core for the Caesura SDK.
+"""caesura-core: Framework-agnostic core for the CaesuraO SDK.
 
 This package provides the shared engine consumed by integration-specific
 packages such as ``caesura-io-openai``.

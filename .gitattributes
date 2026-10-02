@@ -1,0 +1,2 @@
+# SSE fixtures require a blank line to terminate the final event.
+packages/caesura-openai/tests/fixtures/*.sse whitespace=-blank-at-eof

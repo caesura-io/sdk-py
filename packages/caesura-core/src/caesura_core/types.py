@@ -1,10 +1,10 @@
-"""All configuration types, event types, and type aliases for the Caesura core engine."""
+"""All configuration types, event types, and type aliases for the CaesuraO core engine."""
 
 from __future__ import annotations
 
 import sys
 from dataclasses import dataclass, field
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, TypeAlias
 
 if TYPE_CHECKING:
     from collections.abc import Callable
@@ -22,7 +22,7 @@ CaesuraMode = Literal["async", "sync"]
 """Whether recommendation generation blocks the model call.
 
 This is independent of whether you use Python's sync ``OpenAI`` or async
-``AsyncOpenAI`` client.  ``mode="sync"`` means the SDK *awaits* the Caesura
+``AsyncOpenAI`` client.  ``mode="sync"`` means the SDK *awaits* the CaesuraO
 backend before forwarding the request to the LLM; ``mode="async"`` (default)
 fires the observation in the background so the LLM call proceeds immediately.
 """
@@ -33,60 +33,16 @@ Placement = Literal["after-last-analyzed", "end"]
 InjectAs = Literal["user", "system", "assistant", "developer"]
 """Which role the injected recommendation message uses."""
 
+CaesuraAnalysis: TypeAlias = dict[str, Any] | list[Any] | str | int | float | bool | None
+"""Unmodified JSON value or plain-text response from the backend.
+
+The payload shape is defined by the call type. No fields are required or renamed.
+"""
+
+
 # ---------------------------------------------------------------------------
 # Data classes
 # ---------------------------------------------------------------------------
-
-
-@dataclass
-class CaesuraAnalysis:
-    """The analysis object returned by the Caesura backend.
-
-    Intentionally open-ended: different call types may return different fields
-    now or in the future.  Only the stable, cross-call-type fields are typed
-    explicitly; everything else lands in ``extra``.
-    """
-
-    observation: str | None = None
-    recommendation: str | None = None
-    sentiment: str | None = None
-    is_same: bool | None = None
-    id: int | None = None
-    extra: dict[str, Any] = field(default_factory=dict)
-
-    @classmethod
-    def from_dict(cls, data: dict[str, Any]) -> CaesuraAnalysis:
-        """Build a ``CaesuraAnalysis`` from a raw JSON dict.
-
-        Known fields are pulled into typed attributes; remaining fields go
-        into ``extra``.
-        """
-        known_keys = {"observation", "recommendation", "sentiment", "isSame", "id"}
-        extra = {k: v for k, v in data.items() if k not in known_keys}
-        return cls(
-            observation=data.get("observation"),
-            recommendation=data.get("recommendation"),
-            sentiment=data.get("sentiment"),
-            is_same=data.get("isSame"),
-            id=data.get("id"),
-            extra=extra,
-        )
-
-    def to_dict(self) -> dict[str, Any]:
-        """Serialize back to a plain dict (matching the backend JSON shape)."""
-        d: dict[str, Any] = {}
-        if self.observation is not None:
-            d["observation"] = self.observation
-        if self.recommendation is not None:
-            d["recommendation"] = self.recommendation
-        if self.sentiment is not None:
-            d["sentiment"] = self.sentiment
-        if self.is_same is not None:
-            d["isSame"] = self.is_same
-        if self.id is not None:
-            d["id"] = self.id
-        d.update(self.extra)
-        return d
 
 
 @dataclass
@@ -94,7 +50,7 @@ class SpeakerNames:
     """Speaker labels sent to the backend for each dialogue role."""
 
     agent: str = "Agent"
-    """Label for assistant-role turns."""
+    """Label for assistant-role turns and the currentUser receiving backend guidance."""
 
     customer: str = "Customer"
     """Label for user-role turns."""
@@ -116,10 +72,10 @@ class SendConfig:
     """Controls what dialogue window the SDK sends to the backend."""
 
     max_messages: int | Literal["all"] = 10
-    """Last N messages, or ``'all'`` for the whole conversation."""
+    """Max outbound messages, or ``'all'``. Newest dialogue takes priority over analysis history."""
 
     max_input_chars: int | None = None
-    """Cap total characters.  Trims from the START (oldest first)."""
+    """Cap total message-text characters. Trim oldest dialogue first; history uses remaining space."""
 
 
 # ---------------------------------------------------------------------------
@@ -165,7 +121,7 @@ class InjectConfig:
     """Which role to inject as.  Named ``as_role`` to avoid shadowing Python's ``as``."""
 
     keep_last: int | Literal["all"] = "all"
-    """Keep only the last N recommendations in context. ``'all'`` = keep everything."""
+    """Keep only the last N recommendations in context. 0 = none; ``'all'`` = keep everything."""
 
     ttl: TtlPolicy = field(default_factory=TtlNone)
     """Expiration policy."""
@@ -217,6 +173,9 @@ class AnalyzeRequestBody:
     calculate_similarities: bool | None = None
     similarity_threshold: float | None = None
 
+    current_user: str | None = None
+    """Participant receiving guidance, independent of the latest speaker."""
+
     def to_dict(self) -> dict[str, Any]:
         """Serialize to the JSON body expected by the backend."""
         d: dict[str, Any] = {"messages": [m.to_dict() for m in self.messages]}
@@ -232,6 +191,8 @@ class AnalyzeRequestBody:
             d["calculateSimilarities"] = self.calculate_similarities
         if self.similarity_threshold is not None:
             d["similarityThreshold"] = self.similarity_threshold
+        if self.current_user is not None:
+            d["currentUser"] = self.current_user
         return d
 
 
@@ -242,12 +203,16 @@ class AnalyzeMessage:
     speaker_role: Literal["assistant", "user"]
     text: str
     speaker_name: str | None = None
+    speaker_index: int | None = None
+    """Stable participant index. Engines default customer to 1 and agent to 0; analysis context uses -1."""
 
     def to_dict(self) -> dict[str, Any]:
         """Serialize to the JSON shape expected by the backend."""
         d: dict[str, Any] = {"speakerRole": self.speaker_role, "text": self.text}
         if self.speaker_name is not None:
             d["speakerName"] = self.speaker_name
+        if self.speaker_index is not None:
+            d["speakerIndex"] = self.speaker_index
         return d
 
 
@@ -257,6 +222,8 @@ class AnalyzeResult:
 
     analysis: CaesuraAnalysis
     credit_usage: float | None = None
+    is_same: bool | None = None
+    """Optional backend deduplication metadata, independent of the analysis shape."""
 
 
 # -- Event variants --------------------------------------------------------
@@ -280,9 +247,10 @@ class ResponseEvent:
     type: Literal["response"] = field(default="response", init=False)
     conversation_id: str = ""
     query_turn: int = 0
-    analysis: CaesuraAnalysis | None = None
+    analysis: CaesuraAnalysis = None
     credit_usage: float | None = None
     duration_ms: float = 0
+    is_same: bool | None = None
 
 
 @dataclass
@@ -356,8 +324,8 @@ CaesuraEvent = RequestEvent | ResponseEvent | SkippedEvent | BufferedEvent | Ded
 class CaesuraConfig:
     """Top-level SDK configuration.  Almost everything is optional."""
 
-    base_url: str
-    """Base URL incl. subdomain (environment), e.g. ``https://dev.caesura.io``."""
+    base_url: str = "https://api.caesurao.com"
+    """CaesuraO API URL. Usually unchanged; the environment is linked to the user account."""
 
     api_key: str | None = None
     """API key.  Falls back to ``CAESURA_API_KEY`` env var if omitted."""
@@ -369,13 +337,20 @@ class CaesuraConfig:
     """``'async'`` (default) never blocks the model; ``'sync'`` awaits inline."""
 
     conversation_id: str | None = None
-    """Stable conversation id (can be overridden per-call)."""
+    """Backend conversation ID, or a local label with auto_create_conversation=True; overridable per call."""
 
-    persist: bool = False
-    """Whether the backend should persist this conversation/analysis."""
+    persist: bool = True
+    """Save analyses to an existing backend conversation. Set False to opt out."""
+
+    auto_create_conversation: bool = False
+    """Treat conversation IDs as local labels and create a backend conversation on first analysis.
+
+    Only applies when persist=True. The mapping lives in the conversation store;
+    clearing or evicting that state allows a new backend conversation to be created.
+    """
 
     calculate_similarities: bool = True
-    """Run server-side cosine-similarity dedup."""
+    """Calculate server-side recommendation similarities; set a threshold to suppress duplicates."""
 
     similarity_threshold: float | None = None
     """Cosine similarity threshold for SAME detection."""
@@ -441,6 +416,7 @@ class ResolvedConfig:
     timeout_ms: int
     on_error: Callable[[Any], None]
     include_credit_usage: bool
+    auto_create_conversation: bool = False
     call_type: str | None = None
     conversation_id: str | None = None
     similarity_threshold: float | None = None

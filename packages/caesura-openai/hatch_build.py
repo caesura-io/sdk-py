@@ -33,5 +33,5 @@ class PinCoreDependencyHook(MetadataHookInterface):
 
         metadata["dependencies"] = [
             pinned_core,
-            "openai>=2.0.0",
+            "openai>=2.0.0,<4.0.0",
         ]

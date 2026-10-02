@@ -1,4 +1,4 @@
-"""Default constants for the Caesura SDK."""
+"""Default constants for the CaesuraO SDK."""
 
 DEFAULT_TEMPLATE = "CONVERSATION ANALYSIS:\n{analysis}"
 """Default template for rendering an analysis into the injection block."""

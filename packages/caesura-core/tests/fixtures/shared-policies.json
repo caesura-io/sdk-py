@@ -1,0 +1,374 @@
+{
+  "description": "Portable SDK contract vectors. Budgets count code points. afterOccurrence is 1-based; null means unmatched.",
+  "multipart": [
+    {
+      "name": "adjacent Unicode text",
+      "message": {
+        "role": "user",
+        "content": [
+          {
+            "type": "text",
+            "text": "Hello "
+          },
+          {
+            "type": "input_text",
+            "text": "שלום"
+          },
+          {
+            "type": "image_url",
+            "image_url": {
+              "url": "test"
+            }
+          },
+          {
+            "type": "output_text",
+            "text": "😀"
+          }
+        ]
+      },
+      "text": "Hello שלום😀"
+    },
+    {
+      "name": "no separator",
+      "message": {
+        "role": "assistant",
+        "content": [
+          {
+            "type": "text",
+            "text": "a"
+          },
+          {
+            "type": "text",
+            "text": "b"
+          }
+        ]
+      },
+      "text": "ab"
+    }
+  ],
+  "templates": [
+    {
+      "name": "next-step",
+      "analysis": {
+        "next-step": "Ask"
+      },
+      "template": "{analysis.next-step}",
+      "expected": "Ask"
+    },
+    {
+      "name": "המלצה",
+      "analysis": {
+        "המלצה": "שלום"
+      },
+      "template": "{analysis.המלצה}",
+      "expected": "שלום"
+    },
+    {
+      "name": "next step",
+      "analysis": {
+        "next step": "Ask"
+      },
+      "template": "{analysis.next step}",
+      "expected": "Ask"
+    },
+    {
+      "name": "a.b",
+      "analysis": {
+        "a.b": "literal"
+      },
+      "template": "{analysis.a.b}",
+      "expected": "literal"
+    },
+    {
+      "name": "zero",
+      "analysis": {
+        "zero": 0
+      },
+      "template": "{analysis.zero}",
+      "expected": "0"
+    },
+    {
+      "name": "false",
+      "analysis": {
+        "false": false
+      },
+      "template": "{analysis.false}",
+      "expected": "false"
+    },
+    {
+      "name": "missing",
+      "analysis": {
+        "a": {
+          "b": "nested"
+        }
+      },
+      "template": "Missing: {analysis.a.b}\n{analysis.unknown}\nkeep",
+      "expected": "keep"
+    }
+  ],
+  "history": [
+    {
+      "name": "Unicode code points and partial trimming",
+      "dialogue": [
+        {
+          "role": "user",
+          "text": "ab😀"
+        },
+        {
+          "role": "assistant",
+          "text": "גד"
+        }
+      ],
+      "send": {
+        "max_input_chars": 4
+      },
+      "analyses": [],
+      "expected": [
+        {
+          "speakerRole": "user",
+          "speakerName": "Customer",
+          "speakerIndex": 1,
+          "text": "b😀"
+        },
+        {
+          "speakerRole": "user",
+          "speakerName": "Agent",
+          "speakerIndex": 0,
+          "text": "גד"
+        }
+      ]
+    },
+    {
+      "name": "partial ASCII trimming",
+      "dialogue": [
+        {
+          "role": "user",
+          "text": "abc"
+        },
+        {
+          "role": "assistant",
+          "text": "def"
+        }
+      ],
+      "send": {
+        "max_input_chars": 5
+      },
+      "analyses": [],
+      "expected": [
+        {
+          "speakerRole": "user",
+          "speakerName": "Customer",
+          "speakerIndex": 1,
+          "text": "bc"
+        },
+        {
+          "speakerRole": "user",
+          "speakerName": "Agent",
+          "speakerIndex": 0,
+          "text": "def"
+        }
+      ]
+    },
+    {
+      "name": "oversized newest blocks older",
+      "dialogue": [
+        {
+          "role": "user",
+          "text": "x"
+        }
+      ],
+      "send": {
+        "max_input_chars": 4
+      },
+      "analyses": [
+        {
+          "afterOccurrence": 1,
+          "value": "a"
+        },
+        {
+          "afterOccurrence": 1,
+          "value": "oversized"
+        }
+      ],
+      "expected": [
+        {
+          "speakerRole": "user",
+          "speakerName": "Customer",
+          "speakerIndex": 1,
+          "text": "x"
+        }
+      ]
+    },
+    {
+      "name": "contiguous suffix stops at oversized middle",
+      "dialogue": [
+        {
+          "role": "user",
+          "text": "x"
+        }
+      ],
+      "send": {
+        "max_input_chars": 4
+      },
+      "analyses": [
+        {
+          "afterOccurrence": 1,
+          "value": "a"
+        },
+        {
+          "afterOccurrence": 1,
+          "value": "oversized"
+        },
+        {
+          "afterOccurrence": 1,
+          "value": "b"
+        }
+      ],
+      "expected": [
+        {
+          "speakerRole": "assistant",
+          "speakerIndex": -1,
+          "text": "b"
+        },
+        {
+          "speakerRole": "user",
+          "speakerName": "Customer",
+          "speakerIndex": 1,
+          "text": "x"
+        }
+      ]
+    },
+    {
+      "name": "collapse before budget",
+      "dialogue": [
+        {
+          "role": "user",
+          "text": "a"
+        },
+        {
+          "role": "assistant",
+          "text": "b"
+        }
+      ],
+      "send": {
+        "max_messages": 4,
+        "max_input_chars": 4
+      },
+      "analyses": [
+        {
+          "afterOccurrence": 1,
+          "value": "c"
+        },
+        {
+          "afterOccurrence": null,
+          "value": "oversized collapsed"
+        },
+        {
+          "afterOccurrence": null,
+          "value": "d"
+        }
+      ],
+      "expected": [
+        {
+          "speakerRole": "assistant",
+          "speakerIndex": -1,
+          "text": "d"
+        },
+        {
+          "speakerRole": "user",
+          "speakerName": "Customer",
+          "speakerIndex": 1,
+          "text": "a"
+        },
+        {
+          "speakerRole": "assistant",
+          "speakerIndex": -1,
+          "text": "c"
+        },
+        {
+          "speakerRole": "user",
+          "speakerName": "Agent",
+          "speakerIndex": 0,
+          "text": "b"
+        }
+      ]
+    },
+    {
+      "name": "trimmed anchors consume no unused slots",
+      "dialogue": [
+        {
+          "role": "user",
+          "text": "a"
+        },
+        {
+          "role": "assistant",
+          "text": "b"
+        },
+        {
+          "role": "user",
+          "text": "c"
+        }
+      ],
+      "send": {
+        "max_messages": 2
+      },
+      "analyses": [
+        {
+          "afterOccurrence": 1,
+          "value": "old"
+        },
+        {
+          "afterOccurrence": 2,
+          "value": "new"
+        }
+      ],
+      "expected": [
+        {
+          "speakerRole": "user",
+          "speakerName": "Agent",
+          "speakerIndex": 0,
+          "text": "b"
+        },
+        {
+          "speakerRole": "user",
+          "speakerName": "Customer",
+          "speakerIndex": 1,
+          "text": "c"
+        }
+      ]
+    },
+    {
+      "name": "compact Unicode JSON",
+      "dialogue": [
+        {
+          "role": "user",
+          "text": "x"
+        }
+      ],
+      "send": {
+        "max_input_chars": 13
+      },
+      "analyses": [
+        {
+          "afterOccurrence": 1,
+          "value": {
+            "a": "שלום"
+          }
+        }
+      ],
+      "expected": [
+        {
+          "speakerRole": "assistant",
+          "speakerIndex": -1,
+          "text": "{\"a\":\"שלום\"}"
+        },
+        {
+          "speakerRole": "user",
+          "speakerName": "Customer",
+          "speakerIndex": 1,
+          "text": "x"
+        }
+      ]
+    }
+  ]
+}

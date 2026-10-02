@@ -161,3 +161,21 @@ class TestCreditMeter:
         snap = meter.snapshot()
         assert snap.total == 15
         assert snap.by_conversation == {"conv-1": 10, "conv-2": 5}
+
+    def test_counts_remain_cumulative_after_event_eviction(self) -> None:
+        meter = create_credit_meter(CreditMeterOptions(max_events=1))
+        for conversation, is_same in [("a", True), ("b", False), ("a", False)]:
+            meter.record(
+                CreditUsageInfo(credits=1, conversation_id=conversation, is_same=is_same, query_turn=0, timestamp_ms=0)
+            )
+        assert len(meter.events()) == 1
+        assert meter.count() == 3
+        assert meter.count(conversation_id="a") == 2
+        assert meter.count(conversation_id="b") == 1
+        assert meter.count(is_same=True) == 1
+        assert meter.count(is_same=False) == 2
+        assert meter.count(conversation_id="a", is_same=False) == 1
+        meter.reset("b")
+        assert meter.count() == 2
+        assert meter.count(is_same=False) == 1
+        assert meter.total() == 2

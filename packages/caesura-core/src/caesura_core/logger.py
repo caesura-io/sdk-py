@@ -1,4 +1,4 @@
-"""Structured debug logger for Caesura events.
+"""Structured debug logger for CaesuraO events.
 
 Use ``create_debug_logger()`` to create an ``on_event`` handler that logs
 events in a human-readable format.
@@ -98,7 +98,9 @@ def create_debug_logger(options: DebugLoggerOptions | None = None) -> Callable[[
                 {"body": body, "includeCreditUsage": event.include_credit_usage},
             )
         elif isinstance(event, ResponseEvent):
-            analysis = _process_payload(event.analysis.to_dict() if event.analysis else None)
+            analysis = (
+                _truncate(event.analysis) if isinstance(event.analysis, str) else _process_payload(event.analysis)
+            )
             log_fn(
                 f"{prefix} Conversation: {event.conversation_id},"
                 f" Turn: {event.query_turn},"

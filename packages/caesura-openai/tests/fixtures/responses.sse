@@ -1,0 +1,6 @@
+event: response.output_text.delta
+data: {"type": "response.output_text.delta", "sequence_number": 0, "item_id": "msg_fixture", "output_index": 0, "content_index": 0, "delta": "OK", "logprobs": []}
+
+event: response.completed
+data: {"type": "response.completed", "sequence_number": 1, "response": {"id": "resp_fixture", "object": "response", "created_at": 1, "status": "completed", "model": "fixture", "output": [{"id": "msg_fixture", "type": "message", "status": "completed", "role": "assistant", "content": [{"type": "output_text", "text": "OK", "annotations": []}]}]}}
+

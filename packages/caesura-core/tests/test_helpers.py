@@ -15,7 +15,6 @@ from caesura_core.helpers import (
 from caesura_core.logger import DebugLoggerOptions, create_debug_logger
 from caesura_core.store import ConversationState, StoredRecommendation
 from caesura_core.types import (
-    CaesuraAnalysis,
     ResolvedInjectConfig,
     TtlNone,
     TtlSeconds,
@@ -37,14 +36,14 @@ class TestBuildAnalyzeMessages:
             recommendations=[
                 StoredRecommendation(
                     id="1",
-                    analysis=CaesuraAnalysis(recommendation="A"),
+                    analysis={"recommendation": "A"},
                     after_message_hash=hash_message("Agent", "response 1"),
                     created_at_ms=1000,
                     created_at_turn=1,
                 ),
                 StoredRecommendation(
                     id="2",
-                    analysis=CaesuraAnalysis(recommendation="B"),
+                    analysis={"recommendation": "B"},
                     after_message_hash=hash_message("Agent", "response 2"),
                     created_at_ms=2000,
                     created_at_turn=2,
@@ -63,9 +62,9 @@ class TestBuildAnalyzeMessages:
         assert messages[2].speaker_role == "assistant"
         assert json.loads(messages[2].text) == {"recommendation": "A"}
         assert messages[3].text == "msg 2"
-        assert messages[4].text == "response 2"
-        assert messages[5].speaker_role == "assistant"
-        assert json.loads(messages[5].text) == {"recommendation": "B"}
+        assert messages[4].speaker_role == "assistant"
+        assert json.loads(messages[4].text) == {"recommendation": "B"}
+        assert messages[5].text == "response 2"
 
     def test_all_dialogue_messages_use_speaker_role_user(self) -> None:
         from caesura_core.types import AnalyzeMessage
@@ -91,7 +90,7 @@ class TestBuildAnalyzeMessages:
             recommendations=[
                 StoredRecommendation(
                     id="1",
-                    analysis=CaesuraAnalysis(recommendation="R"),
+                    analysis={"recommendation": "R"},
                     after_message_hash=hash_message("Customer", "msg"),
                     created_at_ms=1000,
                     created_at_turn=1,
@@ -118,7 +117,7 @@ class TestBuildAnalyzeMessages:
             recommendations=[
                 StoredRecommendation(
                     id="1",
-                    analysis=CaesuraAnalysis(recommendation="old"),
+                    analysis={"recommendation": "old"},
                     after_message_hash=hash_message("Customer", "msg 1"),
                     created_at_ms=500,
                     created_at_turn=1,
@@ -148,7 +147,7 @@ class TestBuildAnalyzeMessages:
             recommendations=[
                 StoredRecommendation(
                     id="1",
-                    analysis=CaesuraAnalysis(recommendation="A"),
+                    analysis={"recommendation": "A"},
                     after_message_hash=hash_message("Customer", "msg 1"),
                     created_at_ms=500,
                     created_at_turn=1,
@@ -177,14 +176,14 @@ class TestBuildAnalyzeMessages:
             recommendations=[
                 StoredRecommendation(
                     id="1",
-                    analysis=CaesuraAnalysis(recommendation="old"),
+                    analysis={"recommendation": "old"},
                     after_message_hash=hash_message("Customer", "msg 1"),
                     created_at_ms=500,
                     created_at_turn=1,
                 ),
                 StoredRecommendation(
                     id="2",
-                    analysis=CaesuraAnalysis(recommendation="recent"),
+                    analysis={"recommendation": "recent"},
                     after_message_hash=hash_message("Agent", "resp 2"),
                     created_at_ms=1500,
                     created_at_turn=2,
@@ -218,7 +217,7 @@ class TestBuildAnalyzeMessages:
             recommendations=[
                 StoredRecommendation(
                     id=str(i),
-                    analysis=CaesuraAnalysis(recommendation=f"A{i}"),
+                    analysis={"recommendation": f"A{i}"},
                     after_message_hash=h,
                     created_at_ms=i * 100,
                     created_at_turn=i,
@@ -239,29 +238,29 @@ class TestBuildAnalyzeMessages:
 
 class TestRenderAnalysis:
     def test_resolves_basic_dot_path_tokens(self) -> None:
-        analysis = CaesuraAnalysis(
-            observation="User is confused",
-            recommendation="Explain caching",
-            sentiment="Neutral",
-            extra={"customField": 42},
-        )
+        analysis = {
+            "observation": "User is confused",
+            "recommendation": "Explain caching",
+            "sentiment": "Neutral",
+            "customField": 42,
+        }
         template = "Obs: {analysis.observation}\nRec: {analysis.recommendation}"
         assert render_analysis(analysis, template) == "Obs: User is confused\nRec: Explain caching"
 
     def test_resolves_full_analysis_json(self) -> None:
-        analysis = CaesuraAnalysis(
-            observation="User is confused",
-            recommendation="Explain caching",
-            sentiment="Neutral",
-            extra={"customField": 42},
-        )
+        analysis = {
+            "observation": "User is confused",
+            "recommendation": "Explain caching",
+            "sentiment": "Neutral",
+            "customField": 42,
+        }
         template = "{analysis}"
         result = json.loads(render_analysis(analysis, template))
         assert result["observation"] == "User is confused"
         assert result["recommendation"] == "Explain caching"
 
     def test_drops_lines_with_only_empty_tokens(self) -> None:
-        analysis = CaesuraAnalysis(observation="User is confused", recommendation="Explain caching")
+        analysis = {"observation": "User is confused", "recommendation": "Explain caching"}
         template = "Obs: {analysis.observation}\nEmpty: {analysis.nonexistent}\nRec: {analysis.recommendation}"
         assert render_analysis(analysis, template) == "Obs: User is confused\nRec: Explain caching"
 
@@ -272,14 +271,14 @@ class TestSelectActive:
             recommendations=[
                 StoredRecommendation(
                     id="1",
-                    analysis=CaesuraAnalysis(recommendation="A"),
+                    analysis={"recommendation": "A"},
                     after_message_hash=hash_message("Customer", "x"),
                     created_at_ms=1000,
                     created_at_turn=1,
                 ),
                 StoredRecommendation(
                     id="2",
-                    analysis=CaesuraAnalysis(recommendation="B"),
+                    analysis={"recommendation": "B"},
                     after_message_hash=hash_message("Customer", "y"),
                     created_at_ms=2000,
                     created_at_turn=2,
@@ -328,20 +327,28 @@ class TestSelectActive:
         assert len(active) == 1
         assert active[0].id == "2"
 
+    def test_zero_keep_last_selects_nothing_without_clearing_history(self) -> None:
+        state = self._make_state()
+        inject = ResolvedInjectConfig(
+            keep_last=0, ttl=TtlNone(), placement="end", as_role="user", template="", skill_prompt=None
+        )
+        assert select_active(state, inject, 3000) == []
+        assert len(state.recommendations) == 2
+
 
 class TestRenderBlock:
     def test_renders_recommendations(self) -> None:
         recs = [
             StoredRecommendation(
                 id="1",
-                analysis=CaesuraAnalysis(recommendation="Rec A"),
+                analysis={"recommendation": "Rec A"},
                 after_message_hash=hash_message("Customer", "x"),
                 created_at_ms=1000,
                 created_at_turn=1,
             ),
             StoredRecommendation(
                 id="2",
-                analysis=CaesuraAnalysis(recommendation="Rec B"),
+                analysis={"recommendation": "Rec B"},
                 after_message_hash=hash_message("Customer", "y"),
                 created_at_ms=2000,
                 created_at_turn=2,
@@ -439,3 +446,74 @@ class TestCreateDebugLogger:
 
         logger(SkippedEvent(conversation_id="c1", turn=1, reason="no-messages"))
         assert len(log_calls) == 1
+
+
+def test_unicode_survives_rendering_and_backend_history() -> None:
+    from caesura_core import AnalyzeMessage
+
+    analysis = {
+        "observation": "תחושת איזון ⚖️",
+        "recommendation": "בואו נדבר 😊",
+        "emoji": "😊",
+        "latest_speaker": "לקוח",
+    }
+    rendered = render_analysis(analysis, "{analysis}")
+    assert "⚖️" in rendered and "😊" in rendered and "תחושת איזון" in rendered
+    assert "\\u" not in rendered
+    assert json.loads(rendered) == analysis
+    assert render_analysis(analysis, "{analysis.latest_speaker}: {analysis.emoji}") == "לקוח: 😊"
+    state = ConversationState(
+        recommendations=[
+            StoredRecommendation(
+                id="rec",
+                analysis=analysis,
+                after_message_hash=hash_message("", "שלום"),
+                created_at_ms=0,
+                created_at_turn=1,
+            )
+        ]
+    )
+    history = build_analyze_messages([AnalyzeMessage(speaker_role="user", text="שלום")], state)
+    assert history[-1].text == "שלום"
+    assert "תחושת איזון ⚖️" in history[0].text and "\\u" not in history[0].text
+
+
+def test_object_template_fields_preserve_backend_names_and_values() -> None:
+    analysis = {
+        "isSame": False,
+        "is_same": "a separate field",
+        "score": 0,
+        "extra": {"emoji": "😊"},
+        "to_dict": "ordinary field",
+    }
+    assert (
+        render_analysis(analysis, "{analysis.isSame} / {analysis.is_same} / {analysis.score}")
+        == "false / a separate field / 0"
+    )
+    assert render_analysis(analysis, "{analysis.extra}") == '{"emoji":"😊"}'
+    assert render_analysis(analysis, "{analysis.to_dict}") == "ordinary field"
+    assert render_analysis("שלום 😊", "{analysis}\n{analysis.recommendation}") == "שלום 😊"
+    assert render_analysis(["שלום", 0, False], "{analysis}") == '["שלום",0,false]'
+
+
+def test_response_logger_preserves_arbitrary_values() -> None:
+    from caesura_core import ResponseEvent
+
+    calls: list[Any] = []
+    logger = create_debug_logger(DebugLoggerOptions(logger=lambda message, meta: calls.append(meta)))
+    analyses: list[Any] = [False, 0, None, "שלום 😊", [], {"emoji": "😊", "extra": 1}]
+    for analysis in analyses:
+        logger(ResponseEvent(analysis=analysis))
+        assert calls[-1]["analysis"] == analysis
+        assert type(calls[-1]["analysis"]) is type(analysis)
+
+
+def test_hash_matches_javascript_utf16_reference_vectors() -> None:
+    # Generated with FNV-1a over JavaScript charCodeAt(), followed by toString(36).
+    for text, expected in [
+        ("hello", "1f4xj61"),
+        ("שלום", "1q5ymmc"),
+        ("שלום 😊", "1uq9o8b"),
+        ("😊", "bl1yso"),
+    ]:
+        assert hash_message("Customer", text) == expected

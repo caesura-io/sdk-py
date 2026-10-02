@@ -1,4 +1,4 @@
-"""Type definitions for the Caesura OpenAI wrapper."""
+"""Type definitions for the CaesuraO OpenAI wrapper."""
 
 from __future__ import annotations
 
@@ -9,7 +9,7 @@ from caesura_core.types import CaesuraConfig
 
 @dataclass
 class CaesuraOpenAIOptions(CaesuraConfig):
-    """Configuration options for the Caesura OpenAI wrapper.
+    """Configuration options for the CaesuraO OpenAI wrapper.
 
     Inherits all fields from ``CaesuraConfig``.
     """

@@ -37,6 +37,9 @@ class StoredRecommendation:
     injected_text: str | None = None
     """The exact rendered block text as injected, for self-exclusion on collect."""
 
+    after_message_anchor: str | None = None
+    """Fingerprint of dialogue through the analyzed occurrence, including participant identity."""
+
 
 @dataclass
 class ConversationState:
@@ -46,7 +49,7 @@ class ConversationState:
     """Buffered recommendations for this conversation."""
 
     turn: int = 0
-    """Increments on every middleware invocation for this conversation."""
+    """Advanced by the engine on every observe call, including skipped observations."""
 
     last_query_turn: int = field(default=-1_000_000)
     """Turn index of the last backend query (for cadence.every_turns)."""
@@ -59,6 +62,12 @@ class ConversationState:
 
     last_access_ms: float = field(default_factory=lambda: time.time() * 1000)
     """Wall-clock ms of last access, for eviction."""
+
+    backend_conversation_id: str | None = None
+    """Backend ID associated with this local conversation when automatic creation is enabled."""
+
+    injected_messages: set[tuple[str, str]] = field(default_factory=set)
+    """Previously emitted (role, text) guidance, including expired or differently grouped blocks."""
 
 
 @runtime_checkable
@@ -102,6 +111,7 @@ class MemoryCaesuraStore:
     """Default in-memory store with idle + LRU eviction.
 
     Thread-safe via a reentrant lock for use with sync clients in async mode.
+    Active observations are exempt from eviction and may temporarily exceed capacity.
     NOT shared across processes — supply a custom store for multi-instance
     or serverless deployments.
     """
@@ -121,7 +131,7 @@ class MemoryCaesuraStore:
             if state is None:
                 state = ConversationState()
                 self._map[conversation_id] = state
-                self._evict_overflow()
+                self._evict_overflow(conversation_id)
             else:
                 # Refresh recency: re-insert to move to the end (dict preserves order in 3.7+).
                 state.last_access_ms = time.time() * 1000
@@ -150,13 +160,15 @@ class MemoryCaesuraStore:
         if self._max_idle_ms <= 0:
             return
         cutoff = time.time() * 1000 - self._max_idle_ms
-        to_remove = [cid for cid, s in self._map.items() if s.last_access_ms < cutoff]
+        to_remove = [cid for cid, s in self._map.items() if not s.in_flight and s.last_access_ms < cutoff]
         for cid in to_remove:
             del self._map[cid]
 
-    def _evict_overflow(self) -> None:
-        """Remove oldest conversations when exceeding max_conversations."""
+    def _evict_overflow(self, protected_id: str) -> None:
+        """Evict idle LRU entries, retaining the requested entry and active workers."""
         while len(self._map) > self._max_conversations:
-            # dict iteration order is insertion order; first key is the LRU.
-            oldest = next(iter(self._map))
+            oldest = next((cid for cid, s in self._map.items() if cid != protected_id and not s.in_flight), None)
+            if oldest is None:
+                # Temporarily exceed the limit rather than duplicate an active conversation.
+                break
             del self._map[oldest]

@@ -1,13 +1,27 @@
-# Caesura Python SDK
+# CaesuraO Python SDK
 
-This monorepo contains the Python SDK for [Caesura](https://caesura.io).
+This monorepo contains the Python SDK for [CaesuraO](https://caesurao.com).
 
 ## Packages
 
 | Package | Description | PyPI |
 |---|---|---|
-| [`caesura-core`](./packages/caesura-core) | Core engine, types, and logic for Caesura integration. | `pip install caesura-core` |
-| [`caesura-openai`](./packages/caesura-openai) | Transparent wrapper for the official OpenAI Python SDK. | `pip install caesura-openai` |
+| [`caesura-io-core`](./packages/caesura-core) | Core engine, types, and logic for CaesuraO integration. | `pip install caesura-io-core` |
+| [`caesura-io-openai`](./packages/caesura-openai) | Transparent wrapper for the official OpenAI Python SDK. | `pip install caesura-io-openai` |
+
+## Configuration
+
+Set `CAESURA_API_KEY` to your CaesuraO API key.
+
+Analyses are saved by default (`persist=True`). Create a conversation with
+`create_conversation()` and reuse its returned ID, or enable
+`auto_create_conversation=True` to use your own session labels.
+Pass `persist=False` to disable saving. See the [OpenAI wrapper guide](./packages/caesura-openai/README.md).
+
+The wrapper resolves sessions as per-call ID → configured ID → `"default"`;
+`None` means omitted. The fallback is a local label, not a valid backend ID.
+Use automatic creation or an explicitly created backend conversation to save
+analyses. Give independent conversations distinct labels.
 
 ## Development
 
@@ -24,7 +38,7 @@ git clone https://github.com/caesura-io/sdk-py.git
 cd sdk-py
 
 # Sync dependencies across the workspace
-uv sync
+uv sync --all-packages
 ```
 
 ### Testing
@@ -40,6 +54,12 @@ uv run mypy .
 uv run ruff check .
 ```
 
+## Next breaking release
+
+See the [migration examples](./docs/migration.md) for arbitrary analysis values,
+persistence, and default sessions, and the [release checklist](./docs/releasing.md)
+for the OpenAI 2/3 validation matrix and Semantic Release declaration.
+
 ## License
 
-MIT License. See [LICENSE](./LICENSE) for more details.
+Apache-2.0 License. See [LICENSE](./LICENSE) for more details.

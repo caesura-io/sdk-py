@@ -1,6 +1,6 @@
 """caesura-openai: Transparent wrapper for the OpenAI Python SDK.
 
-This package provides the integration between the Caesura core engine
+This package provides the integration between the CaesuraO core engine
 and the official OpenAI Python SDK.
 """
 

@@ -1,6 +1,46 @@
 # CHANGELOG
 
 
+## v2.0.0 (2026-10-02)
+
+### Chores
+
+- Fix CI
+  ([`215ba47`](https://github.com/caesura-io/sdk-py/commit/215ba47b961b3b12e1558055b8898620195b8617))
+
+### Features
+
+- Align SDK history, sessions, and arbitrary analysis responses
+  ([`063ea3c`](https://github.com/caesura-io/sdk-py/commit/063ea3c7eb1245aa9f7a85fa0f52f9f5afa54608))
+
+Update CaesuraO branding and the default API endpoint. Add explicit and automatic conversation
+  creation, stable participant indices, currentUser, FNV occurrence anchors, and correct
+  dialogue/analysis ordering.
+
+Align Chat and Responses injection, reused-history filtering, deduplication, Unicode budgets,
+  exact-key templates, and background failure handling. Validate OpenAI 2/3 through real local HTTP,
+  clean distributions, shared JS fixtures, and a gated Semantic Release workflow.
+
+Validation: 520 tests with OpenAI 2 and 3; clean wheel/sdist tests; lint, formatting, types,
+  metadata, 16 shared parity vectors, and live persistence.
+
+BREAKING CHANGE: CaesuraAnalysis is a type alias for arbitrary response values, not a constructible
+  dataclass. Read exact keys from response objects or handle plain text and other JSON values
+  directly. Persistence now defaults to true; create a backend conversation explicitly or enable
+  automatic creation. Calls without a conversation ID now analyze using the shared local "default"
+  session. Use distinct labels for independent conversations, or persist=False to analyze without
+  saving. See docs/migration.md for examples.
+
+### Breaking Changes
+
+- Caesuraanalysis is a type alias for arbitrary response values, not a constructible dataclass. Read
+  exact keys from response objects or handle plain text and other JSON values directly. Persistence
+  now defaults to true; create a backend conversation explicitly or enable automatic creation. Calls
+  without a conversation ID now analyze using the shared local "default" session. Use distinct
+  labels for independent conversations, or persist=False to analyze without saving. See
+  docs/migration.md for examples.
+
+
 ## v1.0.4 (2026-07-06)
 
 ### Bug Fixes

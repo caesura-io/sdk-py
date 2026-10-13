@@ -1,6 +1,32 @@
 # CHANGELOG
 
 
+## v3.0.0 (2026-10-13)
+
+### Features
+
+- Require explicit conversation identity and customer-turn lifecycle
+  ([`6afb6b8`](https://github.com/caesura-io/sdk-py/commit/6afb6b812d3bfb117a3e2f685ea526d3bd758320))
+
+Add durable store writes, cancellable analysis and auditing, transcript hooks, stream completion
+  reporting, SDK provenance, and consistent prompt insertion. Validate lockstep distribution
+  dependencies and document the 3.0 migration.
+
+BREAKING CHANGE: Conversation IDs are mandatory and authoritative; automatic creation, default
+  sessions, and backend ID mappings are removed. Create once and reuse the returned ID. Customer
+  turns now control analysis and cadence. Custom stores require explicit set operations.
+  Cancellation propagates and strict foreground failures prevent provider calls. Streams return lazy
+  proxies with terminal auditing and awaited transcript persistence. See docs/migration.md.
+
+### Breaking Changes
+
+- Conversation IDs are mandatory and authoritative; automatic creation, default sessions, and
+  backend ID mappings are removed. Create once and reuse the returned ID. Customer turns now control
+  analysis and cadence. Custom stores require explicit set operations. Cancellation propagates and
+  strict foreground failures prevent provider calls. Streams return lazy proxies with terminal
+  auditing and awaited transcript persistence. See docs/migration.md.
+
+
 ## v2.0.0 (2026-10-02)
 
 ### Chores

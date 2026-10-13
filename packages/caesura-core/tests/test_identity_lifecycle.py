@@ -11,6 +11,7 @@ from importlib.metadata import version
 from typing import Any
 from unittest.mock import patch
 
+import httpx
 import pytest
 import respx
 from caesura_core import (
@@ -106,6 +107,12 @@ def test_removed_auto_creation_and_legacy_mapping_are_rejected() -> None:
 @pytest.mark.parametrize("asynchronous", [False, True])
 @respx.mock
 async def test_provenance_on_http_creation_and_analysis(asynchronous: bool) -> None:
+    counter = respx.get("https://api.caesurao.com/api/conversation/messages").respond(
+        200, json={"success": True, "conversationId": "remote", "nextMessageId": 1}
+    )
+    uploads = respx.post("https://api.caesurao.com/api/conversation/messages").mock(
+        side_effect=lambda request: httpx.Response(200, json={"success": True, **json.loads(request.content)})
+    )
     create = respx.post("https://api.caesurao.com/api/conversation").respond(200, json={"id": "remote"})
     analysis = respx.post("https://api.caesurao.com/api/analyze").respond(200, text="guide")
     engine = (AsyncCaesuraEngine if asynchronous else CaesuraEngine)(CaesuraConfig(api_key="test", mode="sync"))
@@ -115,7 +122,7 @@ async def test_provenance_on_http_creation_and_analysis(asynchronous: bool) -> N
         engine.observe(cid, [], context=AnalysisContext(turn=CustomerTurn("turn", AnalyzeMessage("user", "hi")))),
         asynchronous,
     )
-    for route in (create, analysis):
+    for route in (create, analysis, uploads, counter):
         request = route.calls.last.request
         assert {k: v for k, v in request.headers.items() if k.startswith("x-caesura-sdk-")} == {
             "x-caesura-sdk-language": "python",
@@ -125,7 +132,7 @@ async def test_provenance_on_http_creation_and_analysis(asynchronous: bool) -> N
             "x-caesura-sdk-runtime-name": engine.identity.runtime_name,
             "x-caesura-sdk-runtime-version": engine.identity.runtime_version,
         }
-        assert "secret" not in json.loads(request.content)
+        assert b"secret" not in request.content
         assert b"sdk_identity" not in request.content
     assert engine.completions[0].context.sdk_identity == engine.identity
     assert engine.creation_completions[0].context.metadata == {"secret": "never on wire"}
@@ -286,24 +293,35 @@ async def test_async_transcript_delay_preserves_fifo_without_blocking_other_conv
             first_entered.set()
             await release.wait()
 
-    local = Local()
+    independent_analyzed = asyncio.Event()
+
+    class SignallingLocal(Local):
+        async def analyze(self, body: Any, **options: Any) -> AnalyzeResult:  # type: ignore[override]
+            result = super().analyze(body, **options)
+            if body.conversation_id == "b":
+                independent_analyzed.set()
+            return result
+
+    local = SignallingLocal()
     engine = AsyncCaesuraEngine(CaesuraConfig(transport=local, persist_transcript=persist))
 
     def context(id: str) -> AnalysisContext:
         return AnalysisContext(turn=CustomerTurn(id, AnalyzeMessage("user", id)))
 
     first = asyncio.create_task(engine.observe("a", [], context=context("first")))
-    await first_entered.wait()
-    await engine.observe("a", [], context=context("second"))
-    await engine.observe("b", [], context=context("independent"))
-    for _ in range(50):
-        if local.calls:
-            break
-        await asyncio.sleep(0.001)
-    assert [(b.session_id, b.messages[-1].text) for b, _ in local.calls] == [("b", "independent")]
-    release.set()
-    await first
-    await engine.drain()
+    await asyncio.wait_for(first_entered.wait(), 3)
+    second = asyncio.create_task(engine.observe("a", [], context=context("second")))
+    try:
+        await asyncio.wait_for(engine.observe("b", [], context=context("independent")), 3)
+        await asyncio.wait_for(independent_analyzed.wait(), 3)
+        assert [(b.session_id, b.messages[-1].text) for b, _ in local.calls] == [("b", "independent")]
+        assert [record.message.id for record in records] == ["first", "independent"]
+    finally:
+        release.set()
+        await asyncio.wait_for(asyncio.gather(first, second), 3)
+    await asyncio.wait_for(engine.drain(), 3)
+    assert [record.message.id for record in records] == ["first", "independent", "second"]
+    assert engine.store._pins == {}
     assert [(b.session_id, b.messages[-1].text) for b, _ in local.calls] == [
         ("b", "independent"),
         ("a", "first"),

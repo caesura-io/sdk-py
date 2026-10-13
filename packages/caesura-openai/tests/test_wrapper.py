@@ -11,6 +11,8 @@ from caesura_core import DEFAULT_SKILL_PROMPT
 from caesura_openai import CaesuraOpenAIOptions, create_async_caesura, create_caesura
 from openai import AsyncOpenAI, OpenAI
 
+pytestmark = pytest.mark.usefixtures("acknowledge_transcript_endpoint")
+
 if TYPE_CHECKING:
     from caesura_core import CaesuraEvent
 
@@ -475,7 +477,7 @@ async def test_conversation_creation_and_id_reuse(asynchronous: bool, api: str) 
 async def test_creation_failure_is_explicit(asynchronous: bool) -> None:
     from caesura_core import TransportError
 
-    options = CaesuraOpenAIOptions(api_key="key", base_url="http://caesura.test", mode="sync")
+    options = CaesuraOpenAIOptions(api_key="key", base_url="http://caesura.test", mode="sync", failure_policy="raise")
     creation = respx.post("http://caesura.test/api/conversation").respond(403, json={"error": "Forbidden"})
     model = respx.post("http://openai.test/responses").respond(200, json={"id": "response", "output": []})
     cls = AsyncOpenAI if asynchronous else OpenAI

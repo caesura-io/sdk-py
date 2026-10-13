@@ -188,6 +188,9 @@ class AnalyzeRequestBody:
     current_user: str | None = None
     """Participant receiving guidance, independent of the latest speaker."""
 
+    transcript_message_id: int | None = None
+    """Stable ID of the customer message saved by the transcript transport."""
+
     def to_dict(self) -> dict[str, Any]:
         """Serialize to the JSON body expected by the backend."""
         d: dict[str, Any] = {"messages": [m.to_dict() for m in self.messages]}
@@ -203,6 +206,8 @@ class AnalyzeRequestBody:
             d["calculateSimilarities"] = self.calculate_similarities
         if self.similarity_threshold is not None:
             d["similarityThreshold"] = self.similarity_threshold
+        if self.transcript_message_id is not None:
+            d["transcriptMessageId"] = self.transcript_message_id
         if self.current_user is not None:
             d["currentUser"] = self.current_user
         return d
@@ -249,7 +254,7 @@ class RequestEvent:
     """Emitted when an analyze request is sent to the backend."""
 
     type: Literal["request"] = field(default="request", init=False)
-    conversation_id: str = ""
+    conversation_id: str | None = ""
     query_turn: int = 0
     body: AnalyzeRequestBody | None = None
     include_credit_usage: bool = False
@@ -260,7 +265,7 @@ class ResponseEvent:
     """Emitted when an analyze response is received from the backend."""
 
     type: Literal["response"] = field(default="response", init=False)
-    conversation_id: str = ""
+    conversation_id: str | None = ""
     query_turn: int = 0
     analysis: CaesuraAnalysis = None
     credit_usage: float | None = None
@@ -273,7 +278,7 @@ class SkippedEvent:
     """Emitted when an observe call is skipped (cadence/in-flight/no-messages)."""
 
     type: Literal["skipped"] = field(default="skipped", init=False)
-    conversation_id: str = ""
+    conversation_id: str | None = ""
     turn: int = 0
     reason: Literal["cadence-turns", "cadence-seconds", "in-flight", "no-messages"] = "no-messages"
 
@@ -283,7 +288,7 @@ class BufferedEvent:
     """Emitted when a new recommendation is buffered."""
 
     type: Literal["buffered"] = field(default="buffered", init=False)
-    conversation_id: str = ""
+    conversation_id: str | None = ""
     query_turn: int = 0
     recommendation_id: str = ""
 
@@ -293,7 +298,7 @@ class DedupedEvent:
     """Emitted when a recommendation is deduplicated (isSame or empty)."""
 
     type: Literal["deduped"] = field(default="deduped", init=False)
-    conversation_id: str = ""
+    conversation_id: str | None = ""
     query_turn: int = 0
 
 
@@ -311,7 +316,7 @@ class InjectedEvent:
     """Emitted when recommendations are injected into the prompt."""
 
     type: Literal["injected"] = field(default="injected", init=False)
-    conversation_id: str = ""
+    conversation_id: str | None = ""
     turn: int = 0
     blocks: list[InjectedBlock] = field(default_factory=list)
     placement: Placement = "end"
@@ -322,7 +327,7 @@ class ErrorEvent:
     """Emitted when an error occurs during the observation cycle."""
 
     type: Literal["error"] = field(default="error", init=False)
-    conversation_id: str = ""
+    conversation_id: str | None = ""
     error: Any = None
 
 
@@ -370,7 +375,7 @@ class CaesuraConfig:
     """Authoritative conversation ID; required on stateful calls, overridable per call."""
 
     persist: bool = True
-    """Save each analysis and its last submitted utterance. This is not a complete transcript archive."""
+    """Save analyses and completed customer/agent dialogue to the backend. Partial output stays callback-only."""
 
     auto_create_conversation: bool = False
     """Removed capability. True raises with migration guidance; create explicitly instead."""

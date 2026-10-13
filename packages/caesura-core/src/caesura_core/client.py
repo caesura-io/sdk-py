@@ -14,7 +14,7 @@ from typing import TYPE_CHECKING, cast
 import httpx
 
 if TYPE_CHECKING:
-    from caesura_core.runtime import AnalysisContext
+    from caesura_core.runtime import AnalysisContext, HostedTranscriptMessage
 from caesura_core.identity import sdk_identity
 from caesura_core.types import AnalyzeRequestBody, AnalyzeResult, CaesuraAnalysis
 
@@ -50,6 +50,46 @@ class CaesuraClient:
             context.conversation_id = cid
             context.check()
         return cid
+
+    def get_next_message_id(self, conversation_id: str, *, context: AnalysisContext | None = None) -> int:
+        """Read the next numeric message ID when resuming without stored SDK state."""
+        timeout = _timeout(self._timeout, context)
+        with httpx.Client(timeout=timeout) as client:
+            response = client.get(
+                f"{self._base_url}/api/conversation/messages",
+                params={"conversationId": conversation_id},
+                headers={"authorization": f"Bearer {self._api_key}", **_identity_headers(context)},
+            )
+        if not response.is_success:
+            raise RuntimeError(f"CaesuraO message counter {response.status_code}: {response.text}")
+        result = _parse_next_message_id(response, conversation_id)
+        if context is not None:
+            context.check()
+        return result
+
+    def persist_messages(
+        self,
+        conversation_id: str,
+        messages: list[HostedTranscriptMessage],
+        *,
+        context: AnalysisContext | None = None,
+    ) -> None:
+        """Save completed dialogue without running analysis. IDs make retries idempotent."""
+        body = _transcript_body(conversation_id, messages)
+        if not body["messages"]:
+            return
+        timeout = _timeout(self._timeout, context)
+        with httpx.Client(timeout=timeout) as client:
+            response = client.post(
+                f"{self._base_url}/api/conversation/messages",
+                json=body,
+                headers={"authorization": f"Bearer {self._api_key}", **_identity_headers(context)},
+            )
+        if not response.is_success:
+            raise RuntimeError(f"CaesuraO save messages {response.status_code}: {response.text}")
+        _validate_transcript_response(response, conversation_id, messages)
+        if context is not None:
+            context.check()
 
     def analyze(
         self,
@@ -117,6 +157,46 @@ class AsyncCaesuraClient:
             context.conversation_id = cid
             context.check()
         return cid
+
+    async def get_next_message_id(self, conversation_id: str, *, context: AnalysisContext | None = None) -> int:
+        """Read the next numeric message ID when resuming without stored SDK state."""
+        timeout = _timeout(self._timeout, context)
+        async with httpx.AsyncClient(timeout=timeout) as client:
+            response = await client.get(
+                f"{self._base_url}/api/conversation/messages",
+                params={"conversationId": conversation_id},
+                headers={"authorization": f"Bearer {self._api_key}", **_identity_headers(context)},
+            )
+        if not response.is_success:
+            raise RuntimeError(f"CaesuraO message counter {response.status_code}: {response.text}")
+        result = _parse_next_message_id(response, conversation_id)
+        if context is not None:
+            context.check()
+        return result
+
+    async def persist_messages(
+        self,
+        conversation_id: str,
+        messages: list[HostedTranscriptMessage],
+        *,
+        context: AnalysisContext | None = None,
+    ) -> None:
+        """Save completed dialogue without running analysis. IDs make retries idempotent."""
+        body = _transcript_body(conversation_id, messages)
+        if not body["messages"]:
+            return
+        timeout = _timeout(self._timeout, context)
+        async with httpx.AsyncClient(timeout=timeout) as client:
+            response = await client.post(
+                f"{self._base_url}/api/conversation/messages",
+                json=body,
+                headers={"authorization": f"Bearer {self._api_key}", **_identity_headers(context)},
+            )
+        if not response.is_success:
+            raise RuntimeError(f"CaesuraO save messages {response.status_code}: {response.text}")
+        _validate_transcript_response(response, conversation_id, messages)
+        if context is not None:
+            context.check()
 
     async def analyze(
         self,
@@ -233,3 +313,60 @@ def _timeout(default: float, context: AnalysisContext | None) -> float:
     if context.deadline is None:
         return default
     return min(default, max(0.001, context.deadline - time.monotonic()))
+
+
+def _transcript_body(conversation_id: str, messages: list[HostedTranscriptMessage]) -> dict[str, object]:
+    return {
+        "conversationId": conversation_id,
+        "messages": [
+            {
+                "id": message.id,
+                "role": "user" if message.role == "customer" else "assistant",
+                "text": message.text,
+                **({"speakerName": message.name} if message.name else {}),
+                **({"speakerIndex": message.speaker_index} if message.speaker_index is not None else {}),
+            }
+            for message in messages
+            if message.status == "completed"
+        ],
+    }
+
+
+def _validate_transcript_response(
+    response: httpx.Response, conversation_id: str, messages: list[HostedTranscriptMessage]
+) -> None:
+    try:
+        data = response.json()
+        acknowledgments = data.get("messages") if isinstance(data, dict) else None
+        ids = (
+            {item["id"] for item in acknowledgments if isinstance(item, dict) and type(item.get("id")) is int}
+            if isinstance(acknowledgments, list)
+            else set()
+        )
+        expected = {message.id for message in messages if message.status == "completed"}
+        if (
+            not isinstance(data, dict)
+            or data.get("success") is not True
+            or data.get("conversationId") != conversation_id
+            or not expected <= ids
+        ):
+            raise ValueError("Response did not acknowledge all submitted message IDs")
+    except (ValueError, TypeError) as error:
+        raise RuntimeError("CaesuraO save messages: invalid persistence acknowledgment") from error
+
+
+def _parse_next_message_id(response: httpx.Response, conversation_id: str) -> int:
+    try:
+        data = response.json()
+        counter = data.get("nextMessageId") if isinstance(data, dict) else None
+        if (
+            not isinstance(data, dict)
+            or data.get("success") is not True
+            or data.get("conversationId") != conversation_id
+            or type(counter) is not int
+            or not 1 <= counter <= 2147483647
+        ):
+            raise ValueError("Invalid conversation message counter")
+        return counter
+    except (ValueError, TypeError) as error:
+        raise RuntimeError("CaesuraO message counter: invalid response") from error

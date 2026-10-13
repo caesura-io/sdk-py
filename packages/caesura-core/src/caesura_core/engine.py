@@ -28,6 +28,8 @@ from caesura_core.runtime import (
     ConversationOptions,
     CreationCompletion,
     CustomerTurn,
+    HostedStorageError,
+    HostedTranscriptMessage,
     PreviousAnalysisError,
     StoreError,
     TranscriptCompletion,
@@ -149,9 +151,9 @@ def _has_analysis(analysis: CaesuraAnalysis) -> bool:
     return True
 
 
-@dataclass
+@dataclass(eq=False)
 class _Work:
-    conversation_id: str
+    conversation_id: str | None
     collected: list[AnalyzeMessage]
     context: AnalysisContext
     generation: int
@@ -159,6 +161,10 @@ class _Work:
     pinned: bool = False
     done: threading.Event = field(default_factory=threading.Event)
     completion: AnalysisCompletion | None = None
+    predecessors: tuple[_Work, ...] = ()
+    stateless: bool = False
+    state: ConversationState | None = None
+    operation_context: AnalysisContext | None = None
 
 
 def _snapshot_context(context: AnalysisContext) -> AnalysisContext:
@@ -174,13 +180,27 @@ def _snapshot_context(context: AnalysisContext) -> AnalysisContext:
         conversation_id=context.conversation_id,
         sdk_identity=context.sdk_identity,
         agent_message_id=context.agent_message_id,
+        stateless=context.stateless,
+        analysis_persist=context.analysis_persist,
     )
 
 
 @dataclass
 class _Creation:
     completion: CreationCompletion
+    caller_context: AnalysisContext
     done: threading.Event = field(default_factory=threading.Event)
+
+
+@dataclass(eq=False)
+class _Transcript:
+    conversation_id: str | None
+    context: AnalysisContext
+    generation: int
+    predecessors: tuple[_Transcript, ...] = ()
+    pinned: bool = False
+    done: threading.Event = field(default_factory=threading.Event)
+    async_done: asyncio.Event | None = None
 
 
 class _Common:
@@ -192,6 +212,10 @@ class _Common:
             else "in-process"
         )
         self._creations: list[_Creation] = []
+        self._transcripts: list[_Transcript] = []
+        self._transcript_queues: dict[str, list[_Transcript]] = {}
+        self._transcript_guard = threading.RLock()
+        self._asynchronous = asynchronous
         self._provider_streams: list[Any] = []
         self.creation_completions: list[CreationCompletion] = []
         self.transcript_completions: list[TranscriptCompletion] = []
@@ -214,6 +238,8 @@ class _Common:
                 self._store.clear,
                 self._store.clear_all,
                 getattr(self._client, "create_conversation", None),
+                getattr(self._client, "persist_messages", None),
+                getattr(self._client, "get_next_message_id", None),
                 config.persist_result,
                 config.persist_transcript,
                 config.on_provider_request,
@@ -222,6 +248,8 @@ class _Common:
                     raise TypeError("Async-only dependency requires AsyncCaesuraEngine/AsyncCaesuraOpenAI")
         self._generations: dict[str, int] = {}
         self._work: list[_Work] = []
+        self._analysis_queues: dict[str, list[_Work]] = {}
+        self._analysis_guard = threading.RLock()
         self.completions: list[AnalysisCompletion] = []
         self.callback_errors: list[Exception] = []
         self._closed = False
@@ -247,12 +275,12 @@ class _Common:
                 self.callback_errors.append(error)
                 self._cfg.on_error(error)
 
-    def _report(self, conv_id: str, error: Exception) -> None:
+    def _report(self, conv_id: str | None, error: Exception) -> None:
         self.emit_event(ErrorEvent(conversation_id=conv_id, error=error))
         self._cfg.on_error(error)
 
-    def _new_work(self, conv_id: str, collected: list[AnalyzeMessage], context: AnalysisContext | None) -> _Work:
-        require_conversation_id(conv_id)
+    def _new_work(self, conv_id: str | None, collected: list[AnalyzeMessage], context: AnalysisContext | None) -> _Work:
+        self._check_identity(conv_id, context)
         if self._closed or self._closing:
             raise RuntimeError("CaesuraO engine is closed")
         if context is None:
@@ -263,27 +291,49 @@ class _Common:
         context = self.prepare_context(context, conv_id)
         context.check()
         if context.turn is not None:
+            if context.turn.message.speaker_role != "user":
+                raise ValueError("CustomerTurn.message must have the customer source role 'user'")
             if not context.turn.id:
                 raise ValueError("CustomerTurn.id must be nonempty")
             selected = [*context.turn.background, context.turn.message] if context.turn.message.text.strip() else []
         else:
             selected = []
         selected = [normalize_dialogue(m, self._cfg.speaker_names) for m in selected if m.text.strip()]
-        work = _Work(conv_id, selected, context, self._generations.setdefault(conv_id, 0))
-        if isinstance(self._store, MemoryCaesuraStore):
-            self._store.pin(conv_id)
-            work.pinned = True
-        return work
+        if conv_id is None:
+            return _Work(None, selected, context, 0, stateless=True, state=ConversationState())
+        with self._analysis_guard:
+            queue = self._analysis_queues.setdefault(conv_id, [])
+            work = _Work(conv_id, selected, context, self._generations.setdefault(conv_id, 0))
+            # As with transcript writes, retain every pending predecessor: a
+            # cancelled middle operation must not release later work past the head.
+            work.predecessors = tuple(queue)
+            if isinstance(self._store, MemoryCaesuraStore):
+                self._store.pin(conv_id)
+                work.pinned = True
+            queue.append(work)
+            return work
 
     def _finish(self, work: _Work) -> None:
-        if work.pinned:
-            self._store.unpin(work.conversation_id)
-            work.pinned = False
-        work.done.set()
+        with self._analysis_guard:
+            # Async task callbacks also finish work cancelled before _run starts.
+            if work.done.is_set():
+                return
+            if work.pinned:
+                self._store.unpin(work.conversation_id)
+                work.pinned = False
+            if work.conversation_id is None:
+                work.done.set()
+                return
+            queue = self._analysis_queues[work.conversation_id]
+            queue.remove(work)
+            if not queue:
+                del self._analysis_queues[work.conversation_id]
+            work.predecessors = ()
+            work.done.set()
 
     def _valid(self, work: _Work) -> None:
         work.context.check()
-        if self._generations.get(work.conversation_id, 0) != work.generation:
+        if work.conversation_id is not None and self._generations.get(work.conversation_id, 0) != work.generation:
             raise AnalysisCancelled("Conversation was cleared")
 
     def _admit_valid(self, state: ConversationState, work: _Work) -> bool:
@@ -339,13 +389,21 @@ class _Common:
             messages=build_analyze_messages(
                 work.collected, state, send=self._cfg.send, speaker_names=self._cfg.speaker_names
             ),
-            conversation_id=work.conversation_id,
-            session_id=work.conversation_id,
+            conversation_id=None if work.stateless else work.conversation_id,
+            session_id=None if work.stateless else work.conversation_id,
             call_type=self._cfg.call_type,
-            persist=self._cfg.persist,
+            persist=False if work.stateless else self._cfg.persist,
             calculate_similarities=self._cfg.calculate_similarities,
             similarity_threshold=self._cfg.similarity_threshold,
             current_user=self._cfg.speaker_names.agent,
+            transcript_message_id=(
+                state.transcript_message_ids.get(work.context.turn.id)
+                if work.context.turn
+                and not work.stateless
+                and self._cfg.persist
+                and callable(getattr(self._client, "persist_messages", None))
+                else None
+            ),
         )
 
     def _buffer(self, state: ConversationState, work: _Work, result: AnalyzeResult) -> None:
@@ -398,11 +456,11 @@ class _Common:
                 error = cancelled
             work.completion.error = error
             work.completion.status = "cancelled" if isinstance(error, asyncio.CancelledError) else "failed"
-            if isinstance(error, Exception):
+            if isinstance(error, Exception) and not any(c.error is error for c in self.transcript_completions):
                 self._report(work.conversation_id, error)
 
     def _outcome_state(self, state: ConversationState, work: _Work, status: str) -> None:
-        if self._generations.get(work.conversation_id, 0) != work.generation:
+        if work.conversation_id is not None and self._generations.get(work.conversation_id, 0) != work.generation:
             raise AnalysisCancelled("Conversation was cleared")
         if work.context.turn and work.context.turn.id in state.processed_turn_ids:
             state.turn_outcomes[work.context.turn.id] = status
@@ -416,20 +474,51 @@ class _Common:
             )
         return cast("Callable[..., Any]", method)
 
+    @staticmethod
+    def _check_identity(conv_id: str | None, context: AnalysisContext | None) -> None:
+        if context is not None and context.stateless:
+            if conv_id is not None:
+                raise ValueError("Stateless calls must omit conversation_id")
+        else:
+            require_conversation_id(conv_id)
+
+    def _creation_failed(self, operation: _Creation, error: BaseException) -> None:
+        operation.completion.error = error
+        operation.completion.conversation_id = operation.completion.context.conversation_id
+        try:
+            operation.caller_context.check()
+        except (AnalysisTimeout, asyncio.CancelledError) as interrupted:
+            operation.completion.error = interrupted
+            raise interrupted from error
+        if isinstance(error, Exception):
+            self._report(None, error)
+        if (
+            not isinstance(error, Exception)
+            or isinstance(error, UnsupportedCapability)
+            or self._options.failure_policy == "raise"
+        ):
+            raise error
+
     def prepare_context(self, context: AnalysisContext | None, conversation_id: str | None = None) -> AnalysisContext:
         result = _snapshot_context(context or AnalysisContext())
         result.conversation_id = conversation_id
         result.sdk_identity = self.identity
         return result
 
+    def _operation_context(self, caller: AnalysisContext) -> AnalysisContext:
+        # Keep caller provenance intact. Each dependency stage gets a fresh budget,
+        # bounded by the caller's deadline, with the same live cancellation token.
+        operation = _snapshot_context(caller)
+        deadline = time.monotonic() + self._cfg.timeout_ms / 1000
+        operation.deadline = min(caller.deadline, deadline) if caller.deadline is not None else deadline
+        return operation
+
     def _begin_creation(self, context: AnalysisContext | None) -> _Creation:
         if self._closed or self._closing:
             raise RuntimeError("CaesuraO engine is closed")
-        value = self.prepare_context(context)
-        if value.deadline is None:
-            value.deadline = time.monotonic() + self._cfg.timeout_ms / 1000
-        value.check()
-        operation = _Creation(CreationCompletion(value))
+        caller = self.prepare_context(context)
+        caller.check()
+        operation = _Creation(CreationCompletion(self._operation_context(caller)), caller)
         self._creations.append(operation)
         self.creation_completions.append(operation.completion)
         return operation
@@ -443,12 +532,64 @@ class _Common:
         operation.completion.context.check()
         return cid
 
-    def _transcript_record(
-        self, conv_id: str, message: TranscriptMessage, context: AnalysisContext | None
-    ) -> TranscriptRecord:
-        require_conversation_id(conv_id)
+    def _begin_transcript(self, conv_id: str | None, context: AnalysisContext | None) -> _Transcript:
+        self._check_identity(conv_id, context)
         if self._closed:
             raise RuntimeError("CaesuraO engine is closed")
+        # Stream finalization may submit output while close() is closing streams.
+        ctx = self.prepare_context(context, conv_id)
+        ctx.check()
+        if conv_id is None:
+            operation = _Transcript(None, ctx, 0)
+            self._transcripts.append(operation)
+            return operation
+        with self._transcript_guard:
+            queue = self._transcript_queues.setdefault(conv_id, [])
+            # Keep every pending predecessor, not just the tail: cancelling a queued
+            # operation must not let its successor overtake an earlier active write.
+            operation = _Transcript(conv_id, ctx, self._generations.setdefault(conv_id, 0), tuple(queue))
+            if isinstance(self._store, MemoryCaesuraStore):
+                self._store.pin(conv_id)
+                operation.pinned = True
+            if self._asynchronous:
+                operation.async_done = asyncio.Event()
+            queue.append(operation)
+            self._transcripts.append(operation)
+            return operation
+
+    def _finish_transcript(self, operation: _Transcript) -> None:
+        with self._transcript_guard:
+            if operation.pinned:
+                self._store.unpin(operation.conversation_id)
+                operation.pinned = False
+            if operation.conversation_id is None:
+                operation.done.set()
+                return
+            queue = self._transcript_queues[operation.conversation_id]
+            queue.remove(operation)
+            if not queue:
+                del self._transcript_queues[operation.conversation_id]
+            operation.predecessors = ()
+            operation.done.set()
+            if operation.async_done is not None:
+                operation.async_done.set()
+
+    def _valid_transcript(self, operation: _Transcript) -> None:
+        operation.context.check()
+        if operation.conversation_id is not None and operation.generation != self._generations.get(
+            operation.conversation_id, 0
+        ):
+            raise AnalysisCancelled("Transcript persistence was cleared")
+
+    def _cancel_transcripts(self, conv_id: str | None = None) -> None:
+        for operation in self._transcripts:
+            if not operation.done.is_set() and (conv_id is None or operation.conversation_id == conv_id):
+                operation.context.cancellation.cancel()
+
+    def _transcript_record(
+        self, conv_id: str | None, message: TranscriptMessage, context: AnalysisContext | None
+    ) -> TranscriptRecord:
+        self._check_identity(conv_id, context)
         if not message.id or message.role not in ("customer", "agent"):
             raise ValueError("Transcript messages require a stable ID and customer or agent role")
         ctx = self.prepare_context(context, conv_id)
@@ -462,7 +603,57 @@ class _Common:
         message = normalize_dialogue(turn.message, self._cfg.speaker_names)
         return TranscriptMessage(turn.id, "customer", message.text, message.speaker_name, message.speaker_index)
 
+    @staticmethod
+    def _allocate_message_id(state: ConversationState, source_id: str, initial: int | None) -> int:
+        existing = state.transcript_message_ids.get(source_id)
+        if existing is not None:
+            if type(existing) is not int or not 1 <= existing <= 2147483647:
+                raise StoreError("Stored transcript message ID is invalid")
+            return existing
+        counter = state.next_message_id if state.next_message_id is not None else initial
+        if type(counter) is not int or not 1 <= counter <= 2147483647:
+            raise StoreError("Conversation message counter is invalid or exhausted")
+        state.transcript_message_ids[source_id] = counter
+        state.next_message_id = counter + 1
+        return counter
+
+    def _counter_reader(self) -> Callable[..., Any]:
+        reader = getattr(self._client, "get_next_message_id", None)
+        if not callable(reader):
+            raise UnsupportedCapability("Transcript transport requires get_next_message_id")
+        return cast("Callable[..., Any]", reader)
+
+    def _customer_persistence_failed(self, work: _Work) -> bool:
+        # Only hosted storage failures authorize stateless analysis; required hooks do not.
+        if work.context.turn is None:
+            return False
+        latest = next(
+            (
+                item
+                for item in reversed(self.transcript_completions)
+                if item.record.correlation.invocation_id == work.context.invocation_id
+                and item.record.message.id == work.context.turn.id
+            ),
+            None,
+        )
+        if latest is None or latest.error is None:
+            return False
+        if isinstance(latest.error, HostedStorageError) and self._options.failure_policy == "continue":
+            work.stateless = True
+            return False
+        work.completion = AnalysisCompletion(
+            work.conversation_id, _snapshot_context(work.context), error=latest.error, status="failed"
+        )
+        self.completions.append(work.completion)
+        self._finish(work)
+        return True
+
     def _request(self, work: _Work, body: AnalyzeRequestBody) -> None:
+        if work.completion is None:
+            work.completion = AnalysisCompletion(work.conversation_id, _snapshot_context(work.context))
+            self.completions.append(work.completion)
+        work.completion.request = deepcopy(body)
+        work.completion.context.analysis_persist = bool(body.persist)
         self.emit_event(
             RequestEvent(
                 conversation_id=work.conversation_id,
@@ -489,6 +680,8 @@ class _Common:
         return {"context": context, "include_credit_usage": self._cfg.include_credit_usage}
 
     def _raise_foreground(self, work: _Work) -> None:
+        # Dependency timeouts follow policy; caller interruption always propagates.
+        work.context.check()
         error = work.completion.error if work.completion else None
         if error is not None and (not isinstance(error, Exception) or self._options.failure_policy == "raise"):
             raise error
@@ -515,8 +708,8 @@ class CaesuraEngine(_Common):
     def __init__(self, config: CaesuraConfig) -> None:
         self._init(config, False)
         self._state_lock = threading.RLock()
+        self._transcript_locks: dict[str, threading.RLock] = {}
         self._threads: list[threading.Thread] = []
-        self._tails: dict[str, _Work] = {}
 
     def update_state(self, conv_id: str, update: Callable[[ConversationState], T]) -> T:
         require_conversation_id(conv_id)
@@ -541,7 +734,9 @@ class CaesuraEngine(_Common):
 
     def _create_backend(self, **kwargs: Any) -> str:
         try:
-            cid: str = sync_call(self._creation(), **kwargs)
+            method = self._creation()
+            kwargs["context"].check()
+            cid: str = sync_call(method, **kwargs)
             return cid
         except CaesuraError:
             raise
@@ -558,7 +753,7 @@ class CaesuraEngine(_Common):
         name: str | None = None,
         calendar_id: str | None = None,
         event_id: str | None = None,
-    ) -> str:
+    ) -> str | None:
         with self._state_lock:
             operation = self._begin_creation(context)
         opts = options or ConversationOptions(name, calendar_id, event_id)
@@ -571,73 +766,174 @@ class CaesuraEngine(_Common):
             )
             return self._created(operation, cid)
         except BaseException as error:
-            operation.completion.conversation_id = operation.completion.context.conversation_id
-            operation.completion.error = error
-            raise
+            self._creation_failed(operation, error)
+            return None
         finally:
             operation.done.set()
 
-    def persist_messages(
-        self, conv_id: str, messages: list[TranscriptMessage], *, context: AnalysisContext | None = None
-    ) -> None:
-        require_conversation_id(conv_id)
-        for message in messages:
-            record = self._transcript_record(conv_id, message, context)
-            if self._options.persist_transcript is None:
-                continue
-            completion = TranscriptCompletion(record)
-            self.transcript_completions.append(completion)
-            try:
-                sync_call(self._options.persist_transcript, record)
-            except asyncio.CancelledError as cancelled:
-                completion.error = cancelled
-                raise
-            except Exception as cause:
-                error = StoreError("Required transcript persistence failed")
-                error.__cause__ = cause
-                completion.error = error
-                self._report(conv_id, error)
-                if self._options.failure_policy == "raise":
-                    raise error from cause
+    def _hosted_message(
+        self, conv_id: str, message: TranscriptMessage, operation: _Transcript, context: AnalysisContext
+    ) -> HostedTranscriptMessage:
+        with self._state_lock:
+            lock = self._transcript_locks.setdefault(conv_id, threading.RLock())
+        context.check()
+        while not lock.acquire(timeout=0.01):
+            context.check()
+        try:
+            context.check()
+            state = self.read_state(conv_id)
+            initial = None
+            if message.id not in state.transcript_message_ids and state.next_message_id is None:
+                initial = sync_call(self._counter_reader(), conv_id, context=context)
+                context.check()
 
-    def observe(self, conv_id: str, collected: list[AnalyzeMessage], *, context: AnalysisContext | None = None) -> None:
+            def allocate(current: ConversationState) -> int:
+                self._valid_transcript(operation)
+                return self._allocate_message_id(current, message.id, initial)
+
+            numeric_id = self.update_state(conv_id, allocate)
+            return HostedTranscriptMessage(
+                numeric_id, message.role, message.text, message.name, speaker_index=message.speaker_index
+            )
+        finally:
+            lock.release()
+
+    def persist_messages(
+        self, conv_id: str | None, messages: list[TranscriptMessage], *, context: AnalysisContext | None = None
+    ) -> None:
+        with self._state_lock:
+            operation = self._begin_transcript(conv_id, context)
+        self._persist_messages(operation, messages)
+
+    def _persist_messages(self, operation: _Transcript, messages: list[TranscriptMessage]) -> None:
+        conv_id = operation.conversation_id
+        operation_context = operation.context
+        try:
+            for message in deepcopy(messages):
+                record = self._transcript_record(conv_id, message, operation_context)
+                hosted = getattr(self._client, "persist_messages", None)
+                save_hosted = (
+                    conv_id is not None and self._cfg.persist and message.status == "completed" and callable(hosted)
+                )
+                if not save_hosted and self._options.persist_transcript is None:
+                    continue
+                completion = TranscriptCompletion(record)
+                self.transcript_completions.append(completion)
+                hosted_stage = False
+                hosted_upload = False
+                try:
+                    for previous in operation.predecessors:
+                        while not previous.done.wait(0.01):
+                            self._valid_transcript(operation)
+                    self._valid_transcript(operation)
+                    if self._options.persist_transcript is not None:
+                        sync_call(self._options.persist_transcript, record)
+                    self._valid_transcript(operation)
+                    if save_hosted and callable(hosted):
+                        assert conv_id is not None
+                        hosted_stage = True
+                        hosted_context = self._operation_context(operation_context)
+                        hosted_context.check()
+                        saved = self._hosted_message(conv_id, message, operation, hosted_context)
+                        hosted_upload = True
+                        self._valid_transcript(operation)
+                        hosted_context.check()
+                        sync_call(hosted, conv_id, [saved], context=hosted_context)
+                        hosted_context.check()
+                    self._valid_transcript(operation)
+                except asyncio.CancelledError as cancelled:
+                    completion.error = cancelled
+                    raise
+                except Exception as cause:
+                    try:
+                        self._valid_transcript(operation)
+                    except (AnalysisTimeout, asyncio.CancelledError) as interrupted:
+                        completion.error = interrupted
+                        if isinstance(interrupted, AnalysisTimeout):
+                            self._report(conv_id, interrupted)
+                        raise interrupted from cause
+                    if isinstance(cause, UnsupportedCapability) or (
+                        isinstance(cause, AnalysisTimeout) and not hosted_stage
+                    ):
+                        completion.error = cause
+                        self._report(conv_id, cause)
+                        raise
+                    # Allocation also writes required local state. A local store failure
+                    # does not authorize bypassing that dependency via hosted fallback.
+                    hosted_failure = hosted_stage and (
+                        hosted_upload or not isinstance(cause, StoreError) or isinstance(cause, HostedStorageError)
+                    )
+                    error = (HostedStorageError if hosted_failure else StoreError)(
+                        "Required transcript persistence failed"
+                    )
+                    error.__cause__ = cause
+                    completion.error = error
+                    self._report(conv_id, error)
+                    if self._options.failure_policy == "raise":
+                        raise error from cause
+        finally:
+            self._finish_transcript(operation)
+
+    def _read_work(self, work: _Work) -> ConversationState:
+        if work.state is not None:
+            return deepcopy(work.state)
+        assert work.conversation_id is not None
+        return self.read_state(work.conversation_id)
+
+    def _update_work(self, work: _Work, update: Callable[[ConversationState], T]) -> T:
+        if work.state is not None:
+            return update(work.state)
+        assert work.conversation_id is not None
+        return self.update_state(work.conversation_id, update)
+
+    def observe(
+        self, conv_id: str | None, collected: list[AnalyzeMessage], *, context: AnalysisContext | None = None
+    ) -> ConversationState | None:
         with self._state_lock:
             work = self._new_work(conv_id, collected, context)
             self._work.append(work)
-            previous = self._tails.get(conv_id)
-            self._tails[conv_id] = work
+            try:
+                customer = self._customer_message(work)
+                transcript = self._begin_transcript(conv_id, work.context) if customer is not None else None
+            except BaseException as error:
+                self._record(work, error=error)
+                self._finish(work)
+                raise
         try:
-            customer = self._customer_message(work)
-            if customer is not None:
-                self.persist_messages(conv_id, [customer], context=work.context)
+            if customer is not None and transcript is not None:
+                self._persist_messages(transcript, [customer])
+                if self._customer_persistence_failed(work):
+                    return work.state
         except BaseException as error:
             self._record(work, error=error)
             self._finish(work)
             raise
         if self._cfg.mode == "sync":
-            self._run(work, previous)
+            self._run(work)
             self._raise_foreground(work)
         else:
             try:
-                thread = threading.Thread(target=self._run, args=(work, previous), daemon=True)
+                thread = threading.Thread(target=self._run, args=(work,), daemon=True)
                 self._threads.append(thread)
                 thread.start()
             except Exception as error:
                 self._record(work, error=error)
                 self._finish(work)
 
-    def _run(self, work: _Work, previous: _Work | None) -> None:
+        return work.state if self._cfg.mode == "sync" else None
+
+    def _run(self, work: _Work) -> None:
         try:
-            if previous:
+            for previous in work.predecessors:
                 while not previous.done.wait(0.01):
                     self._valid(work)
             self._valid(work)
-            admitted = self.update_state(work.conversation_id, lambda state: self._admit_valid(state, work))
+            admitted = self._update_work(work, lambda state: self._admit_valid(state, work))
             if not admitted:
                 return
-            state = self.read_state(work.conversation_id)
+            state = self._read_work(work)
             if not self._body(work, state).messages:
-                self.update_state(work.conversation_id, lambda state: self._outcome_state(state, work, "skipped"))
+                self._update_work(work, lambda state: self._outcome_state(state, work, "skipped"))
                 self.emit_event(SkippedEvent(conversation_id=work.conversation_id, turn=work.turn))
                 return
             body = self._body(work, state)
@@ -645,10 +941,12 @@ class CaesuraEngine(_Common):
                 return
             self._request(work, body)
             start = time.monotonic()
-            if work.context.deadline is None:
-                work.context.deadline = start + self._cfg.timeout_ms / 1000
+            work.operation_context = self._operation_context(work.context)
             try:
-                result = sync_call(self._client.analyze, body, **self._transport_kwargs(work.context))
+                work.operation_context.check()
+                result = sync_call(
+                    self._client.analyze, body, **self._transport_kwargs(work.operation_context or work.context)
+                )
             except (CaesuraError, asyncio.CancelledError):
                 raise
             except (TimeoutError, httpx.TimeoutException) as error:
@@ -656,6 +954,7 @@ class CaesuraEngine(_Common):
             except Exception as error:
                 raise TransportError("Analysis transport failed") from error
             self._response(work, result, start)
+            work.operation_context.check()
             self._valid(work)
             if self._options.persist_result:
                 try:
@@ -664,13 +963,13 @@ class CaesuraEngine(_Common):
                     raise StoreError("Required analysis persistence failed") from error
             with self._state_lock:
                 self._valid(work)
-                self.update_state(work.conversation_id, lambda s: self._buffer(s, work, result))
+                self._update_work(work, lambda s: self._buffer(s, work, result))
         except BaseException as error:
             status = "cancelled" if isinstance(error, asyncio.CancelledError) else "failed"
             if work.turn:
                 # Preserve the primary error when a second store operation also fails.
                 with suppress(Exception, asyncio.CancelledError):
-                    self.update_state(work.conversation_id, lambda state: self._outcome_state(state, work, status))
+                    self._update_work(work, lambda state: self._outcome_state(state, work, status))
             self._record(work, error=error)
         finally:
             self._finish(work)
@@ -679,6 +978,7 @@ class CaesuraEngine(_Common):
         require_conversation_id(conv_id)
         with self._state_lock:
             self._generations[conv_id] = self._generations.get(conv_id, 0) + 1
+            self._cancel_transcripts(conv_id)
             for work in self._work:
                 if work.conversation_id == conv_id and not work.done.is_set():
                     work.context.cancellation.cancel()
@@ -689,6 +989,10 @@ class CaesuraEngine(_Common):
 
     def clear_all(self) -> None:
         with self._state_lock:
+            self._cancel_transcripts()
+            for work in self._work:
+                if not work.done.is_set():
+                    work.context.cancellation.cancel()
             for creation in self._creations:
                 if not creation.done.is_set():
                     creation.completion.context.cancellation.cancel()
@@ -704,16 +1008,25 @@ class CaesuraEngine(_Common):
             creation.done.wait()
         for work in list(self._work):
             work.done.wait()
+        for operation in list(self._transcripts):
+            operation.done.wait()
         return self._drained(raise_errors)
 
     def close(self, *, cancel: bool = False, raise_errors: bool = True) -> list[AnalysisCompletion]:
         self._closing = True
+        if cancel:
+            # Stream finalization may enqueue partial-output persistence behind a
+            # pending write. Cancel that predecessor before awaiting finalization.
+            self._cancel_transcripts()
         for stream in list(self._provider_streams):
             try:
                 stream.close(cancel=cancel)
             except Exception as error:
                 self._cfg.on_error(error)
-        self._closed = True
+        with self._state_lock:
+            self._closed = True
+            if cancel:
+                self._cancel_transcripts()
         if cancel:
             for creation in self._creations:
                 if not creation.done.is_set():
@@ -734,12 +1047,12 @@ class AsyncCaesuraEngine(_Common):
     def __init__(self, config: CaesuraConfig) -> None:
         self._init(config, True)
         self._state_lock = asyncio.Lock()
+        self._transcript_locks: dict[str, asyncio.Lock] = {}
         self._queues: dict[str, asyncio.Lock] = {}
-        self._async_tails: dict[str, _Work] = {}
         self._preparations: dict[asyncio.Task[Any], _Work] = {}
         self._bg_tasks: set[asyncio.Task[None]] = set()
         self._tasks: dict[asyncio.Task[None], _Work] = {}
-        self._creation_tasks: dict[asyncio.Task[str], _Creation] = {}
+        self._creation_tasks: dict[asyncio.Task[str | None], _Creation] = {}
         self._audit_tasks: dict[asyncio.Task[None], AnalysisContext] = {}
 
     async def _store_call(self, fn: Callable[..., Any], *args: Any) -> Any:
@@ -770,6 +1083,7 @@ class AsyncCaesuraEngine(_Common):
     async def _create_backend(self, **kwargs: Any) -> str:
         try:
             method = self._creation()
+            kwargs["context"].check()
             if is_async_callable(method):
                 cid: str = await method(**kwargs)
             else:
@@ -797,11 +1111,11 @@ class AsyncCaesuraEngine(_Common):
         name: str | None = None,
         calendar_id: str | None = None,
         event_id: str | None = None,
-    ) -> str:
+    ) -> str | None:
         operation = self._begin_creation(context)
         opts = options or ConversationOptions(name, calendar_id, event_id)
 
-        async def run() -> str:
+        async def run() -> str | None:
             try:
 
                 async def create() -> str:
@@ -815,9 +1129,8 @@ class AsyncCaesuraEngine(_Common):
 
                 return await cancellable(create(), operation.completion.context)
             except BaseException as error:
-                operation.completion.conversation_id = operation.completion.context.conversation_id
-                operation.completion.error = error
-                raise
+                self._creation_failed(operation, error)
+                return None
             finally:
                 operation.done.set()
 
@@ -841,42 +1154,119 @@ class AsyncCaesuraEngine(_Common):
             operation.done.set()
             self._creation_tasks.pop(task, None)
 
+    async def _hosted_message(
+        self, conv_id: str, message: TranscriptMessage, operation: _Transcript, context: AnalysisContext
+    ) -> HostedTranscriptMessage:
+        lock = self._transcript_locks.setdefault(conv_id, asyncio.Lock())
+        async with lock:
+            state = await self.read_state(conv_id)
+            initial = None
+            if message.id not in state.transcript_message_ids and state.next_message_id is None:
+                # The caller monitors this entire stage (including lock acquisition).
+                # Nested watchers would turn an outer budget expiry into token cancellation.
+                initial = await async_call(self._counter_reader(), conv_id, context=context)
+                context.check()
+
+            def allocate(current: ConversationState) -> int:
+                self._valid_transcript(operation)
+                return self._allocate_message_id(current, message.id, initial)
+
+            numeric_id = await self.update_state(conv_id, allocate)
+            return HostedTranscriptMessage(
+                numeric_id, message.role, message.text, message.name, speaker_index=message.speaker_index
+            )
+
     async def persist_messages(
-        self, conv_id: str, messages: list[TranscriptMessage], *, context: AnalysisContext | None = None
+        self, conv_id: str | None, messages: list[TranscriptMessage], *, context: AnalysisContext | None = None
     ) -> None:
-        require_conversation_id(conv_id)
-        operation_context = self.prepare_context(context, conv_id)
-        for message in messages:
-            record = self._transcript_record(conv_id, message, operation_context)
-            if self._options.persist_transcript is None:
-                continue
-            completion = TranscriptCompletion(record)
-            self.transcript_completions.append(completion)
-            try:
-                await cancellable(async_call(self._options.persist_transcript, record), operation_context)
-                operation_context.check()
-            except asyncio.CancelledError as cancelled:
-                completion.error = cancelled
-                raise
-            except AnalysisTimeout as timeout:
-                completion.error = timeout
-                self._report(conv_id, timeout)
-                raise
-            except Exception as cause:
-                error = StoreError("Required transcript persistence failed")
-                error.__cause__ = cause
-                completion.error = error
-                self._report(conv_id, error)
-                if self._options.failure_policy == "raise":
-                    raise error from cause
+        operation = self._begin_transcript(conv_id, context)
+        await self._persist_messages(operation, messages)
+
+    async def _persist_messages(self, operation: _Transcript, messages: list[TranscriptMessage]) -> None:
+        conv_id = operation.conversation_id
+        operation_context = operation.context
+        try:
+            for message in deepcopy(messages):
+                record = self._transcript_record(conv_id, message, operation_context)
+                hosted = getattr(self._client, "persist_messages", None)
+                save_hosted = (
+                    conv_id is not None and self._cfg.persist and message.status == "completed" and callable(hosted)
+                )
+                if not save_hosted and self._options.persist_transcript is None:
+                    continue
+                completion = TranscriptCompletion(record)
+                self.transcript_completions.append(completion)
+                hosted_stage = False
+                hosted_upload = False
+                try:
+                    for previous in operation.predecessors:
+                        assert previous.async_done is not None
+                        await cancellable(previous.async_done.wait(), operation_context)
+                    self._valid_transcript(operation)
+                    if self._options.persist_transcript is not None:
+                        await cancellable(async_call(self._options.persist_transcript, record), operation_context)
+                    if save_hosted and callable(hosted):
+                        assert conv_id is not None
+                        hosted_stage = True
+                        hosted_context = self._operation_context(operation_context)
+                        saved = await cancellable(
+                            self._hosted_message(conv_id, message, operation, hosted_context), hosted_context
+                        )
+                        hosted_upload = True
+                        self._valid_transcript(operation)
+                        await cancellable(async_call(hosted, conv_id, [saved], context=hosted_context), hosted_context)
+                        hosted_context.check()
+                    self._valid_transcript(operation)
+                except asyncio.CancelledError as cancelled:
+                    completion.error = cancelled
+                    raise
+                except Exception as cause:
+                    try:
+                        self._valid_transcript(operation)
+                    except (AnalysisTimeout, asyncio.CancelledError) as interrupted:
+                        completion.error = interrupted
+                        if isinstance(interrupted, AnalysisTimeout):
+                            self._report(conv_id, interrupted)
+                        raise interrupted from cause
+                    if isinstance(cause, UnsupportedCapability) or (
+                        isinstance(cause, AnalysisTimeout) and not hosted_stage
+                    ):
+                        completion.error = cause
+                        self._report(conv_id, cause)
+                        raise
+                    # Allocation also writes required local state. A local store failure
+                    # does not authorize bypassing that dependency via hosted fallback.
+                    hosted_failure = hosted_stage and (
+                        hosted_upload or not isinstance(cause, StoreError) or isinstance(cause, HostedStorageError)
+                    )
+                    error = (HostedStorageError if hosted_failure else StoreError)(
+                        "Required transcript persistence failed"
+                    )
+                    error.__cause__ = cause
+                    completion.error = error
+                    self._report(conv_id, error)
+                    if self._options.failure_policy == "raise":
+                        raise error from cause
+        finally:
+            self._finish_transcript(operation)
+
+    async def _read_work(self, work: _Work) -> ConversationState:
+        if work.state is not None:
+            return deepcopy(work.state)
+        assert work.conversation_id is not None
+        return await self.read_state(work.conversation_id)
+
+    async def _update_work(self, work: _Work, update: Callable[[ConversationState], T]) -> T:
+        if work.state is not None:
+            return update(work.state)
+        assert work.conversation_id is not None
+        return await self.update_state(work.conversation_id, update)
 
     async def observe(
-        self, conv_id: str, collected: list[AnalyzeMessage], *, context: AnalysisContext | None = None
-    ) -> None:
+        self, conv_id: str | None, collected: list[AnalyzeMessage], *, context: AnalysisContext | None = None
+    ) -> ConversationState | None:
         work = self._new_work(conv_id, collected, context)
         self._work.append(work)
-        previous = self._async_tails.get(conv_id)
-        self._async_tails[conv_id] = work
         preparing = asyncio.current_task()
         if preparing is not None:
             self._preparations[preparing] = work
@@ -884,6 +1274,8 @@ class AsyncCaesuraEngine(_Common):
             customer = self._customer_message(work)
             if customer is not None:
                 await self.persist_messages(conv_id, [customer], context=work.context)
+                if self._customer_persistence_failed(work):
+                    return work.state
         except BaseException as error:
             self._record(work, error=error)
             self._finish(work)
@@ -891,7 +1283,7 @@ class AsyncCaesuraEngine(_Common):
         finally:
             if preparing is not None:
                 self._preparations.pop(preparing, None)
-        coroutine = self._run(work, previous)
+        coroutine = self._run(work)
         try:
             task = asyncio.create_task(coroutine)
         except Exception as error:
@@ -900,7 +1292,7 @@ class AsyncCaesuraEngine(_Common):
             self._finish(work)
             if self._cfg.mode == "sync":
                 self._raise_foreground(work)
-            return
+            return work.state
         self._tasks[task] = work
         if self._cfg.mode == "async":
             self._bg_tasks.add(task)
@@ -921,22 +1313,26 @@ class AsyncCaesuraEngine(_Common):
             await task
             self._raise_foreground(work)
 
-    async def _run(self, work: _Work, previous: _Work | None = None) -> None:
+        return work.state if self._cfg.mode == "sync" else None
+
+    async def _run(self, work: _Work) -> None:
         try:
-            if previous is not None:
+            for previous in work.predecessors:
                 while not previous.done.is_set():
                     self._valid(work)
                     await asyncio.sleep(0.01)
-            async with self._queues.setdefault(work.conversation_id, asyncio.Lock()):
+            async with (
+                asyncio.Lock()
+                if work.conversation_id is None
+                else self._queues.setdefault(work.conversation_id, asyncio.Lock())
+            ):
                 self._valid(work)
-                admitted = await self.update_state(work.conversation_id, lambda state: self._admit_valid(state, work))
+                admitted = await self._update_work(work, lambda state: self._admit_valid(state, work))
                 if not admitted:
                     return
-                state = await self.read_state(work.conversation_id)
+                state = await self._read_work(work)
                 if not self._body(work, state).messages:
-                    await self.update_state(
-                        work.conversation_id, lambda state: self._outcome_state(state, work, "skipped")
-                    )
+                    await self._update_work(work, lambda state: self._outcome_state(state, work, "skipped"))
                     self.emit_event(SkippedEvent(conversation_id=work.conversation_id, turn=work.turn))
                     return
                 body = self._body(work, state)
@@ -944,10 +1340,9 @@ class AsyncCaesuraEngine(_Common):
                     return
                 self._request(work, body)
                 start = time.monotonic()
-                if work.context.deadline is None:
-                    work.context.deadline = start + self._cfg.timeout_ms / 1000
+                work.operation_context = self._operation_context(work.context)
                 try:
-                    result = await cancellable(self._perform_analysis(work, body), work.context)
+                    result = await cancellable(self._perform_analysis(work, body), work.operation_context)
                 except (CaesuraError, asyncio.CancelledError):
                     raise
                 except (TimeoutError, httpx.TimeoutException) as error:
@@ -955,13 +1350,14 @@ class AsyncCaesuraEngine(_Common):
                 except Exception as error:
                     raise TransportError("Analysis transport failed") from error
                 self._response(work, result, start)
+                work.operation_context.check()
                 self._valid(work)
                 if self._options.persist_result:
                     try:
                         await async_call(self._options.persist_result, work.completion)
                     except Exception as error:
                         raise StoreError("Required analysis persistence failed") from error
-                await self.update_state(work.conversation_id, lambda s: self._commit(s, work, result))
+                await self._update_work(work, lambda s: self._commit(s, work, result))
         except asyncio.CancelledError as error:
             work.context.cancellation.cancel()
             await self._failed(work, "cancelled")
@@ -976,7 +1372,7 @@ class AsyncCaesuraEngine(_Common):
     async def _failed(self, work: _Work, status: str) -> None:
         if work.turn:
             try:
-                await self.update_state(work.conversation_id, lambda state: self._outcome_state(state, work, status))
+                await self._update_work(work, lambda state: self._outcome_state(state, work, status))
             except asyncio.CancelledError:
                 if status != "cancelled":
                     raise
@@ -986,12 +1382,16 @@ class AsyncCaesuraEngine(_Common):
 
     async def _perform_analysis(self, work: _Work, body: AnalyzeRequestBody) -> AnalyzeResult:
         if is_async_callable(self._client.analyze):
-            result: AnalyzeResult = await self._client.analyze(body, **self._transport_kwargs(work.context))
+            result: AnalyzeResult = await self._client.analyze(
+                body, **self._transport_kwargs(work.operation_context or work.context)
+            )
             self._record(work, result=result)
             return result
 
         def blocking() -> AnalyzeResult:
-            result: AnalyzeResult = sync_call(self._client.analyze, body, **self._transport_kwargs(work.context))
+            result: AnalyzeResult = sync_call(
+                self._client.analyze, body, **self._transport_kwargs(work.operation_context or work.context)
+            )
             # A completed blocking request is billable even if its awaiting task was cancelled.
             self._record(work, result=result)
             return result
@@ -1007,6 +1407,7 @@ class AsyncCaesuraEngine(_Common):
         require_conversation_id(conv_id)
         async with self._state_lock:
             self._generations[conv_id] = self._generations.get(conv_id, 0) + 1
+            self._cancel_transcripts(conv_id)
             for work in self._work:
                 if work.conversation_id == conv_id and not work.done.is_set():
                     work.context.cancellation.cancel()
@@ -1020,6 +1421,7 @@ class AsyncCaesuraEngine(_Common):
 
     async def clear_all(self) -> None:
         async with self._state_lock:
+            self._cancel_transcripts()
             for audit_context in self._audit_tasks.values():
                 audit_context.cancellation.cancel()
             for creation_task, creation in list(self._creation_tasks.items()):
@@ -1039,10 +1441,17 @@ class AsyncCaesuraEngine(_Common):
         for work in list(self._work):
             if not work.done.is_set():
                 await asyncio.to_thread(work.done.wait)
+        for operation in list(self._transcripts):
+            if not operation.done.is_set():
+                await asyncio.to_thread(operation.done.wait)
         return self._drained(raise_errors)
 
     async def close(self, *, cancel: bool = False, raise_errors: bool = True) -> list[AnalysisCompletion]:
         self._closing = True
+        if cancel:
+            # Stream finalization may enqueue partial-output persistence behind a
+            # pending write. Cancel that predecessor before awaiting finalization.
+            self._cancel_transcripts()
         for stream in list(self._provider_streams):
             try:
                 await stream.close(cancel=cancel)
@@ -1050,6 +1459,7 @@ class AsyncCaesuraEngine(_Common):
                 self._cfg.on_error(error)
         self._closed = True
         if cancel:
+            self._cancel_transcripts()
             for audit_context in self._audit_tasks.values():
                 audit_context.cancellation.cancel()
             for creation_task, creation in list(self._creation_tasks.items()):

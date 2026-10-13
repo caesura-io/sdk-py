@@ -23,6 +23,8 @@ from caesura_core import (
 from caesura_openai import CaesuraOpenAIOptions, create_async_caesura, create_caesura
 from openai import AsyncOpenAI, OpenAI
 
+pytestmark = pytest.mark.usefixtures("acknowledge_transcript_endpoint")
+
 if TYPE_CHECKING:
     from caesura_core import CaesuraEvent
     from caesura_core.types import InjectAs, Placement
@@ -123,6 +125,7 @@ async def test_responses_exact_order_reused_input_and_instructions(
                 expected_input.extend({"role": injected_role, "content": f"guidance {i}"} for i in range(1, turn + 1))
             body = json.loads(backend.calls.last.request.content)
             assert body == {
+                "transcriptMessageId": body["transcriptMessageId"],
                 "messages": expected_backend,
                 "conversationId": "one",
                 "sessionId": "one",
@@ -592,6 +595,7 @@ async def test_empty_template_disables_injection_but_retains_analysis_context(
         assert client._engine.config.inject.template == ""
         assert json.loads(provider.calls.last.request.content) == {"model": "test", key: history}
         assert json.loads(backend.calls.last.request.content) == {
+            "transcriptMessageId": json.loads(backend.calls.last.request.content)["transcriptMessageId"],
             "messages": [
                 {"speakerRole": "user", "speakerName": "Customer", "speakerIndex": 1, "text": "question"},
                 {"speakerRole": "assistant", "speakerIndex": -1, "text": "retained guidance"},

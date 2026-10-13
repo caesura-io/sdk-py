@@ -8,6 +8,7 @@ from typing import TYPE_CHECKING, Any, Literal, cast
 
 from caesura_core.engine import _snapshot_context
 from caesura_core.runtime import (
+    AnalysisTimeout,
     CancellationToken,
     ProviderOutcome,
     TranscriptMessage,
@@ -143,12 +144,13 @@ async def outcome_async(engine: AsyncCaesuraEngine, context: AnalysisContext, ev
             engine.config.on_error(error)
 
 
-def _storage_context(context: AnalysisContext) -> AnalysisContext:
+def _storage_context(context: AnalysisContext, status: Status) -> AnalysisContext:
     # Preserve partial evidence after cancellation without reusing its cancelled token.
     # This storage operation is awaited; it never analyzes or restores guidance state.
     value = _snapshot_context(context)
-    value.cancellation = CancellationToken()
-    value.deadline = None
+    if status != "completed":
+        value.cancellation = CancellationToken()
+        value.deadline = None
     return value
 
 
@@ -157,9 +159,9 @@ def finish(engine: CaesuraEngine, capture: Capture, status: Status, error: BaseE
     before = len(engine.transcript_completions)
     try:
         engine.persist_messages(
-            capture.context.conversation_id or "",
+            capture.context.conversation_id,
             capture.messages(engine, status),
-            context=_storage_context(capture.context),
+            context=_storage_context(capture.context, status),
         )
     except BaseException as failure:
         persistence_error = failure
@@ -182,7 +184,10 @@ def finish(engine: CaesuraEngine, capture: Capture, status: Status, error: BaseE
     if (
         persistence_error is not None
         and error is None
-        and (isinstance(persistence_error, asyncio.CancelledError) or engine._options.failure_policy == "raise")
+        and (
+            isinstance(persistence_error, (asyncio.CancelledError, AnalysisTimeout))
+            or engine._options.failure_policy == "raise"
+        )
     ):
         raise persistence_error
 
@@ -194,9 +199,9 @@ async def finish_async(
     before = len(engine.transcript_completions)
     try:
         await engine.persist_messages(
-            capture.context.conversation_id or "",
+            capture.context.conversation_id,
             capture.messages(engine, status),
-            context=_storage_context(capture.context),
+            context=_storage_context(capture.context, status),
         )
     except BaseException as failure:
         persistence_error = failure
@@ -219,7 +224,10 @@ async def finish_async(
     if (
         persistence_error is not None
         and error is None
-        and (isinstance(persistence_error, asyncio.CancelledError) or engine._options.failure_policy == "raise")
+        and (
+            isinstance(persistence_error, (asyncio.CancelledError, AnalysisTimeout))
+            or engine._options.failure_policy == "raise"
+        )
     ):
         raise persistence_error
 

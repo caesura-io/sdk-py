@@ -23,8 +23,17 @@ from caesura_core import (
     SkippedEvent,
     resolve_config,
 )
+from caesura_core.client import AsyncCaesuraClient, CaesuraClient
 
 
+@pytest.fixture
+def analysis_only_transport(monkeypatch: pytest.MonkeyPatch) -> None:
+    """These scheduling unit tests exercise a transport without optional transcript storage."""
+    monkeypatch.setattr(CaesuraClient, "persist_messages", None)
+    monkeypatch.setattr(AsyncCaesuraClient, "persist_messages", None)
+
+
+@pytest.mark.usefixtures("analysis_only_transport")
 def test_default_url_and_account_key(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setenv("CAESURA_API_KEY", "account-key")
     config = resolve_config(CaesuraConfig())
@@ -33,6 +42,7 @@ def test_default_url_and_account_key(monkeypatch: pytest.MonkeyPatch) -> None:
     assert resolve_config(CaesuraConfig(base_url="http://localhost:3000")).base_url == "http://localhost:3000"
 
 
+@pytest.mark.usefixtures("analysis_only_transport")
 def test_dictionary_config_has_actionable_error() -> None:
     with pytest.raises(TypeError, match=r"expected CaesuraConfig.*CaesuraOpenAIOptions"):
         CaesuraEngine({"api_key": "key"})  # type: ignore[arg-type]
@@ -42,6 +52,13 @@ def test_dictionary_config_has_actionable_error() -> None:
 @pytest.mark.parametrize("persist", [None, False])
 @respx.mock
 async def test_persistence_request_defaults_and_opt_out(async_client: bool, persist: bool | None) -> None:
+    if persist is not False:
+        respx.get("https://api.caesurao.com/api/conversation/messages").respond(
+            200, json={"success": True, "conversationId": "conversation", "nextMessageId": 1}
+        )
+        respx.post("https://api.caesurao.com/api/conversation/messages").mock(
+            side_effect=lambda request: httpx.Response(200, json={"success": True, **json.loads(request.content)})
+        )
     config = CaesuraConfig(api_key="key", mode="sync")
     if persist is not None:
         config.persist = persist
@@ -62,6 +79,7 @@ async def test_persistence_request_defaults_and_opt_out(async_client: bool, pers
 
 @pytest.mark.parametrize("every_turns,expected", [(1, [1, 2, 3, 4]), (2, [1, 3])])
 @pytest.mark.parametrize("async_client", [False, True])
+@pytest.mark.usefixtures("analysis_only_transport")
 async def test_core_advances_turns_and_honors_cadence(
     every_turns: int, expected: list[int], async_client: bool
 ) -> None:
@@ -85,6 +103,7 @@ async def test_core_advances_turns_and_honors_cadence(
     assert not engine.store.get("conversation").in_flight
 
 
+@pytest.mark.usefixtures("analysis_only_transport")
 def test_background_threads_queue_and_snapshot_before_starting() -> None:
     engine = CaesuraEngine(CaesuraConfig(api_key="key"))
     messages = [AnalyzeMessage("user", "Hello", speaker_index=42)]
@@ -102,6 +121,7 @@ def test_background_threads_queue_and_snapshot_before_starting() -> None:
         assert [rec.created_at_turn for rec in engine.store.get("conversation").recommendations] == [1, 2]
 
 
+@pytest.mark.usefixtures("analysis_only_transport")
 async def test_background_tasks_queue_and_snapshot_before_scheduling() -> None:
     engine = AsyncCaesuraEngine(CaesuraConfig(api_key="key"))
     messages = [AnalyzeMessage("user", "Hello", speaker_index=42)]
@@ -117,6 +137,7 @@ async def test_background_tasks_queue_and_snapshot_before_scheduling() -> None:
 
 
 @pytest.mark.parametrize("async_client", [False, True])
+@pytest.mark.usefixtures("analysis_only_transport")
 async def test_failed_analysis_does_not_stall_next_turn(async_client: bool) -> None:
     errors: list[Exception] = []
     config = CaesuraConfig(api_key="key", mode="sync", on_error=errors.append)
@@ -137,6 +158,7 @@ async def test_failed_analysis_does_not_stall_next_turn(async_client: bool) -> N
 
 @pytest.mark.parametrize("async_client", [False, True])
 @pytest.mark.parametrize("flag", ["isSame", "is_same", None])
+@pytest.mark.usefixtures("analysis_only_transport")
 async def test_backend_deduplication_flag(async_client: bool, flag: str | None) -> None:
     config = CaesuraConfig(api_key="key", mode="sync")
     engine = AsyncCaesuraEngine(config) if async_client else CaesuraEngine(config)
@@ -152,6 +174,7 @@ async def test_backend_deduplication_flag(async_client: bool, flag: str | None) 
     assert len(engine.store.get("conversation").recommendations) == (0 if flag else 1)
 
 
+@pytest.mark.usefixtures("analysis_only_transport")
 async def test_cancelled_background_task_releases_reservation() -> None:
     engine = AsyncCaesuraEngine(CaesuraConfig(api_key="key"))
     messages = [AnalyzeMessage(speaker_role="user", text="Hello")]
@@ -168,6 +191,7 @@ async def test_cancelled_background_task_releases_reservation() -> None:
 
 
 @pytest.mark.parametrize("async_client", [False, True])
+@pytest.mark.usefixtures("analysis_only_transport")
 async def test_skipped_observations_advance_turn_ttl(async_client: bool) -> None:
     from caesura_core import InjectConfig, TtlTurns, select_active
 
@@ -210,6 +234,7 @@ async def test_skipped_observations_advance_turn_ttl(async_client: bool) -> None
     ],
 )
 @respx.mock
+@pytest.mark.usefixtures("analysis_only_transport")
 async def test_arbitrary_analysis_reaches_history_events_and_credit_callbacks(
     async_client: bool, analysis: CaesuraAnalysis
 ) -> None:
@@ -268,6 +293,7 @@ async def test_arbitrary_analysis_reaches_history_events_and_credit_callbacks(
     ],
 )
 @respx.mock
+@pytest.mark.usefixtures("analysis_only_transport")
 async def test_send_limits_apply_to_request_body(async_client: bool, send: SendConfig, expected: list[str]) -> None:
     events: list[CaesuraEvent] = []
     config = CaesuraConfig(api_key="key", mode="sync", send=send, on_event=events.append)
@@ -297,6 +323,7 @@ async def test_send_limits_apply_to_request_body(async_client: bool, send: SendC
 
 @pytest.mark.parametrize("async_client", [False, True])
 @respx.mock
+@pytest.mark.usefixtures("analysis_only_transport")
 async def test_speaker_names_fill_missing_names_without_overriding_explicit_names(async_client: bool) -> None:
     from caesura_core import SpeakerNames, hash_message
 
@@ -323,6 +350,7 @@ async def test_speaker_names_fill_missing_names_without_overriding_explicit_name
 @pytest.mark.parametrize("agent_name", [None, "Support"])
 @pytest.mark.parametrize("agent_speaking", [False, True])
 @respx.mock
+@pytest.mark.usefixtures("analysis_only_transport")
 async def test_current_user_is_configured_agent_regardless_of_latest_speaker(
     async_client: bool, agent_name: str | None, agent_speaking: bool
 ) -> None:
@@ -362,6 +390,7 @@ async def test_current_user_is_configured_agent_regardless_of_latest_speaker(
     ],
 )
 @respx.mock
+@pytest.mark.usefixtures("analysis_only_transport")
 async def test_history_fits_remaining_budget_and_keeps_original_anchor(
     async_client: bool, send: SendConfig, include_history: bool
 ) -> None:
@@ -389,6 +418,7 @@ async def test_history_fits_remaining_budget_and_keeps_original_anchor(
 
 @pytest.mark.parametrize("async_client", [False, True])
 @respx.mock
+@pytest.mark.usefixtures("analysis_only_transport")
 async def test_default_send_window_is_ten_messages(async_client: bool) -> None:
     config = CaesuraConfig(api_key="key", mode="sync")
     engine = AsyncCaesuraEngine(config) if async_client else CaesuraEngine(config)
@@ -402,6 +432,7 @@ async def test_default_send_window_is_ten_messages(async_client: bool) -> None:
     assert [message["text"] for message in sent] == [str(i) for i in range(2, 12)]
 
 
+@pytest.mark.usefixtures("analysis_only_transport")
 async def test_failed_task_scheduling_closes_coroutine_and_allows_retry() -> None:
     import inspect
 
@@ -437,6 +468,7 @@ async def test_failed_task_scheduling_closes_coroutine_and_allows_retry() -> Non
 
 @pytest.mark.parametrize("async_client", [False, True])
 @pytest.mark.parametrize("text", ["", " \t\n", "\u2003\u00a0"])
+@pytest.mark.usefixtures("analysis_only_transport")
 async def test_blank_dialogue_does_not_create_or_analyze(async_client: bool, text: str) -> None:
     events: list[CaesuraEvent] = []
     config = CaesuraConfig(api_key="test", mode="sync", on_event=events.append)
@@ -463,6 +495,7 @@ async def test_blank_dialogue_does_not_create_or_analyze(async_client: bool, tex
 
 
 @pytest.mark.parametrize("failure", ["constructor", "start"])
+@pytest.mark.usefixtures("analysis_only_transport")
 def test_failed_thread_scheduling_reports_error_and_allows_retry(failure: str) -> None:
     errors: list[Exception] = []
     events: list[CaesuraEvent] = []
@@ -499,6 +532,7 @@ def test_failed_thread_scheduling_reports_error_and_allows_retry(failure: str) -
 
 @pytest.mark.parametrize("async_client", [False, True])
 @respx.mock
+@pytest.mark.usefixtures("analysis_only_transport")
 async def test_blank_messages_do_not_shift_occurrence_anchors_or_persisted_utterance(async_client: bool) -> None:
     config = CaesuraConfig(api_key="test", mode="sync")
     engine = AsyncCaesuraEngine(config) if async_client else CaesuraEngine(config)

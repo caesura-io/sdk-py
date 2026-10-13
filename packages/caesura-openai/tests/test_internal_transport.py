@@ -226,6 +226,7 @@ def sync_demo(path: Path) -> None:
         ),
     )
     conversation_id = client.create_conversation(name="Sync example")
+    assert conversation_id is not None
     client.persist_messages(conversation_id, [TranscriptMessage("greeting", "agent", "Welcome")])
     result = client.chat.completions.create(
         model="local",
@@ -256,6 +257,7 @@ async def async_demo(path: Path) -> None:
         ),
     )
     conversation_id = await client.create_conversation(name="Async example")
+    assert conversation_id is not None
     await client.persist_messages(conversation_id, [TranscriptMessage("greeting", "agent", "Welcome")])
     # Reusing a turn ID across Chat/Responses does not pay for another analysis.
     await client.responses.create(

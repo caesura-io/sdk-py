@@ -21,6 +21,8 @@ from caesura_core import (
 )
 from caesura_openai import CaesuraOpenAIOptions, create_async_caesura, create_caesura
 
+pytestmark = pytest.mark.usefixtures("acknowledge_transcript_endpoint")
+
 
 class Local:
     def __init__(self) -> None:

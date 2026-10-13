@@ -1,10 +1,67 @@
-# Migrating from 2.x to 3.0
+# Migration guide
 
 Package and import names remain `caesura-io-core` / `caesura_core` and
 `caesura-io-openai` / `caesura_openai`. The product is CaesuraO and the default
 API URL is `https://api.caesurao.com`.
 
-## One authoritative conversation ID
+## Upcoming release
+
+These changes apply when upgrading from 3.0.0.
+
+### Handle conversation creation failures
+
+`create_conversation()` now returns `str | None`. Under the default
+`failure_policy="continue"`, recoverable creation failures and dependency timeouts
+are reported through error hooks and return `None`. Previously they raised.
+Check the result before saving or reusing it:
+
+```python
+conversation_id = client.create_conversation(name="Example")
+# Save conversation_id only when it is not None.
+response = client.responses.create(
+    model=model,
+    input="Hello",
+    caesura_conversation_id=conversation_id,
+    caesura_stateless=conversation_id is None,
+)
+```
+
+The async equivalents are awaited. Use `failure_policy="raise"` when creation must
+succeed. Caller cancellation, expired caller deadlines, invalid configuration and
+unsupported capabilities still raise. No ID is invented on failure.
+
+`caesura_stateless=True` explicitly permits a call without a conversation ID. Hooks
+must handle a missing conversation ID for these calls. Stateful calls still require
+an ID, including with `persist=False`.
+
+### Saving and fallback
+
+`persist=True` now saves new customer messages and completed agent replies,
+including customer turns skipped by analysis cadence. Use `persist_messages()` for
+application-provided greetings; recording a message does not trigger analysis.
+`persist=False` disables hosted saving. Application storage hooks remain separate.
+
+Under continue policy, failed hosted customer-message storage permits stateless
+analysis for that invocation. Failed analysis permits generation without new
+guidance; failed reply storage does not withhold the reply. Strict policy and
+required application hooks retain their contracts. Dependency timeouts follow
+failure policy; caller cancellation and deadlines still stop the invocation.
+
+Fallback respects `mode`. Use `"sync"` for guidance in the current response. ID-free
+background results are available through completion hooks and `drain()`, but are
+not reused by later calls. Calls with an existing ID retain their guidance state.
+
+Reuse stable message IDs and retain durable SDK state to recognize retries across
+restarts. Retries must preserve text and speaker index. Failed writes are not
+replayed automatically; retry storage with the same ID. See
+[application integration](application-integration.md) for the full contract.
+
+## Migrating from 2.x to 3.0
+
+The following describes the earlier 3.0 upgrade. It does not include the upcoming
+fallback and transcript-saving changes above.
+
+### One authoritative conversation ID
 
 Remove `auto_create_conversation=True`: it is rejected rather than reinterpreted.
 There is no local session mapping, shared `"default"` fallback, or automatic creation
@@ -21,8 +78,10 @@ options = CaesuraOpenAIOptions(auto_create_conversation=True)
 from caesura_core import ConversationOptions
 client = create_caesura(provider, CaesuraOpenAIOptions())
 conversation_id = client.create_conversation(ConversationOptions(name="Example"))
-# application.save_conversation_id(conversation_id)
-client.responses.create(model=model, input="Hello", caesura_conversation_id=conversation_id)
+# Save conversation_id in application storage for subsequent calls.
+client.responses.create(
+    model=model, input="Hello", caesura_conversation_id=conversation_id,
+)
 # Async equivalents: await client.create_conversation(...) and await create(...).
 ```
 
@@ -39,25 +98,7 @@ and analysis history in application code. `state_from_dict` rejects a nonempty l
 mapping to prevent silently using the wrong identity. If the mapping is already lost,
 recover the ID from application/backend records; do not create a replacement implicitly.
 
-## Analysis versus transcript persistence
-
-`persist=True` remains the default. The current HTTP `/api/analyze` saves only its
-**last submitted message and analysis**; earlier background, greetings, Agent output,
-and cadence-skipped turns are not a complete archive. An ID does not fetch history.
-
-Configure `persist_transcript(record)` for application-owned storage. It receives
-stable message IDs and explicit `customer`/`agent` roles, and is awaited independently
-of cadence. Automatically selected customers and provider Agent text use this hook;
-call `client.persist_messages(id, [TranscriptMessage(...)])` for application greetings
-or externally completed Agent messages. Use idempotent upserts by conversation/message
-ID. This does not invoke analysis or invent an HTTP append endpoint.
-
-Conversation creation accepts `ConversationOptions` and an optional
-`AnalysisContext` for cancellation, deadlines, and metadata. Creation participates in drain/close
-and emits `ConversationCreatedEvent`. Preserve returned remote identities from
-`creation_completions` when reconciling ambiguous cancellation.
-
-## Streaming and provenance
+### Streaming and provenance
 
 `create(..., stream=True)` returns a lazy delegating stream proxy. Iteration/chunks,
 response attributes, `close()`, and sync/async context managers remain available;
@@ -73,12 +114,11 @@ outcome includes `persistence_error`. Use `AnalysisContext.agent_message_id` for
 application identity across provider retries; otherwise provider response ID, then
 invocation ID, forms the output ID (with `:agent:<output-index>` suffix).
 
-Automatic diagnostic identity uses installed distribution metadata and namespaced
-`x-caesura-sdk-*` headers only on Caesura HTTP requests. No duplicate version constants,
-OpenAI telemetry headers, or prompt content are introduced. See the
-[wire contract](application-integration.md#sdk-provenance).
+SDK requests and audit events include package versions and runtime information
+for troubleshooting. This metadata stays out of model prompts. See
+[SDK diagnostics](application-integration.md#sdk-diagnostics).
 
-## Histories and limits
+### Histories and limits
 
 Keep your application's dialogue separate from SDK-injected requests whenever
 possible. Reused guidance is recognized by its emitted role and exact text,
@@ -87,11 +127,10 @@ with the same role and identical text is ambiguous after serialization. Named
 or indexed dialogue, audio messages, tool calls, and multimodal content retain
 their existing protection.
 
-Both SDKs use Agent index `0`, Customer index `1`, and prior-analysis index `-1`;
-explicit dialogue indices are preserved. Both dialogue participants use backend
-role `user`; backend role `assistant` is reserved for analysis context.
+Keep the provider's normal `user` and `assistant` roles. Configure participant
+labels with `speaker_names`; the SDK handles the analysis request format.
 
-## Customer turns, stores, and lifecycle
+### Customer turns, stores, and lifecycle
 
 The new [application integration guide](application-integration.md) contains full
 contracts. Runnable applications are in

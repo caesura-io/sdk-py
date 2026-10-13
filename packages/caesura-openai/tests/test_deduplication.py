@@ -13,6 +13,8 @@ from caesura_core import AnalysisContext, AnalyzeMessage, CustomerTurn
 from caesura_openai import AsyncCaesuraOpenAI, CaesuraOpenAIOptions, create_async_caesura, create_caesura
 from openai import AsyncOpenAI, OpenAI
 
+pytestmark = pytest.mark.usefixtures("acknowledge_transcript_endpoint")
+
 if TYPE_CHECKING:
     from caesura_core import CaesuraEvent
 

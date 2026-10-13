@@ -11,6 +11,8 @@ from caesura_core import InjectConfig
 from caesura_openai import AsyncCaesuraOpenAI, CaesuraOpenAIOptions, create_async_caesura, create_caesura
 from openai import AsyncOpenAI, OpenAI
 
+pytestmark = pytest.mark.usefixtures("acknowledge_transcript_endpoint")
+
 
 @pytest.mark.parametrize("asynchronous", [False, True])
 @pytest.mark.parametrize("same_speaker", [False, True])

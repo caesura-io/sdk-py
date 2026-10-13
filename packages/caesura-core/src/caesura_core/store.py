@@ -75,6 +75,12 @@ class ConversationState:
     injected_messages: set[tuple[str, str]] = field(default_factory=set)
     """Previously emitted (role, text) guidance, including expired or differently grouped blocks."""
 
+    next_message_id: int | None = None
+    """Next numeric backend message ID; initialized from the backend when absent."""
+
+    transcript_message_ids: dict[str, int] = field(default_factory=dict)
+    """Stable application message IDs mapped to allocated backend IDs, including pending retries."""
+
 
 @runtime_checkable
 class CaesuraStore(Protocol):
@@ -126,7 +132,8 @@ class MemoryCaesuraStore:
     """Default in-memory store with idle + LRU eviction.
 
     Thread-safe via a reentrant lock for use with sync clients in async mode.
-    Active observations are exempt from eviction and may temporarily exceed capacity.
+    Active observations and queued/active transcript writes are exempt from eviction
+    and may temporarily exceed capacity.
     NOT shared across processes — supply a custom store for multi-instance
     or serverless deployments.
     """

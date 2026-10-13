@@ -7,6 +7,7 @@ No OpenAI transport is replaced or selected by these fixtures.
 
 from __future__ import annotations
 
+import json
 import threading
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from typing import TYPE_CHECKING, Any
@@ -79,3 +80,34 @@ def local_openai_transport(monkeypatch: pytest.MonkeyPatch) -> Iterator[None]:
         server.server_close()
         thread.join()
     assert not errors, errors
+
+
+@pytest.fixture
+def acknowledge_transcript_endpoint(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Analysis-focused HTTP tests acknowledge the independent transcript service."""
+    send, async_send = httpx.Client.send, httpx.AsyncClient.send
+
+    def sync(self: httpx.Client, request: httpx.Request, **kwargs: Any) -> httpx.Response:
+        if request.url.path == "/api/conversation/messages" and request.method == "GET":
+            return httpx.Response(
+                200,
+                json={"success": True, "conversationId": request.url.params["conversationId"], "nextMessageId": 1},
+                request=request,
+            )
+        if request.url.path == "/api/conversation/messages":
+            return httpx.Response(200, json={"success": True, **json.loads(request.content)}, request=request)
+        return send(self, request, **kwargs)
+
+    async def asynchronous(self: httpx.AsyncClient, request: httpx.Request, **kwargs: Any) -> httpx.Response:
+        if request.url.path == "/api/conversation/messages" and request.method == "GET":
+            return httpx.Response(
+                200,
+                json={"success": True, "conversationId": request.url.params["conversationId"], "nextMessageId": 1},
+                request=request,
+            )
+        if request.url.path == "/api/conversation/messages":
+            return httpx.Response(200, json={"success": True, **json.loads(request.content)}, request=request)
+        return await async_send(self, request, **kwargs)
+
+    monkeypatch.setattr(httpx.Client, "send", sync)
+    monkeypatch.setattr(httpx.AsyncClient, "send", asynchronous)

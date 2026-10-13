@@ -8,6 +8,9 @@ import httpx
 import pytest
 import respx
 from caesura_core import AnalyzeMessage, AsyncCaesuraEngine, CaesuraConfig, CaesuraEngine, SendConfig
+from test_engine import analysis_only_transport  # noqa: F401 -- explicit legacy analysis transport fixture
+
+pytestmark = pytest.mark.usefixtures("analysis_only_transport")
 
 
 @pytest.mark.parametrize("asynchronous", [False, True])

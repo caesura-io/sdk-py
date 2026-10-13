@@ -7,6 +7,7 @@ import threading
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
+from urllib.parse import parse_qs, urlparse
 
 import pytest
 from caesura_core import InjectConfig
@@ -27,12 +28,23 @@ def recorded_api() -> Iterator[tuple[str, list[tuple[str, dict[str, Any]]]]]:
         def log_message(self, format: str, *args: Any) -> None:
             pass
 
+        def do_GET(self) -> None:
+            cid = parse_qs(urlparse(self.path).query)["conversationId"][0]
+            content = json.dumps({"success": True, "conversationId": cid, "nextMessageId": 1}).encode()
+            self.send_response(200)
+            self.send_header("Content-Type", "application/json")
+            self.send_header("Content-Length", str(len(content)))
+            self.end_headers()
+            self.wfile.write(content)
+
         def do_POST(self) -> None:
             body = json.loads(self.rfile.read(int(self.headers["Content-Length"])))
             requests.append((self.path, body))
             content_type = "application/json"
             if self.path == "/api/conversation":
                 content = b'{"id":"created-id"}'
+            elif self.path == "/api/conversation/messages":
+                content = json.dumps({"success": True, **body}).encode()
             elif self.path == "/api/analyze":
                 turn = sum(path == self.path for path, _ in requests)
                 content = json.dumps(f"guidance {turn}").encode()
@@ -132,11 +144,18 @@ async def test_recorded_four_turn_wire_contract(
             )
             if role == "assistant":
                 expected_provider.append(message)
-                assert requests[-1][1][key] == expected_provider
-                history = json.loads(json.dumps(requests[-1][1][key]))
+                assert [body for path, body in requests if path in ("/chat/completions", "/responses")][-1][
+                    key
+                ] == expected_provider
+                history = json.loads(
+                    json.dumps(
+                        [body for path, body in requests if path in ("/chat/completions", "/responses")][-1][key]
+                    )
+                )
                 continue
             body = [body for path, body in requests if path == "/api/analyze"][-1]
             assert body == {
+                "transcriptMessageId": body["transcriptMessageId"],
                 "messages": expected_backend,
                 "conversationId": "created-id",
                 "sessionId": "created-id",
@@ -147,7 +166,9 @@ async def test_recorded_four_turn_wire_contract(
             expected_provider.extend(
                 [message, {"role": "developer", "content": f"guidance {turn if same_speaker else (turn + 1) // 2}"}]
             )
-            assert requests[-1][1][key] == expected_provider
+            assert [body for path, body in requests if path in ("/chat/completions", "/responses")][-1][
+                key
+            ] == expected_provider
             expected_backend.append(
                 {
                     "speakerRole": "assistant",
@@ -156,7 +177,9 @@ async def test_recorded_four_turn_wire_contract(
                 }
             )
             # Reuse serialized injected input even when switching APIs.
-            history = json.loads(json.dumps(requests[-1][1][key]))
+            history = json.loads(
+                json.dumps([body for path, body in requests if path in ("/chat/completions", "/responses")][-1][key])
+            )
         assert sum(path == "/api/conversation" for path, _ in requests) == 1
     finally:
         closed = client.close()

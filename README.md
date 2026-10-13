@@ -11,9 +11,8 @@ Start with the [OpenAI quick start](packages/caesura-openai/README.md) or
 [runnable examples](https://github.com/caesura-io/examples-sdk-py).
 
 Create a conversation explicitly and reuse its returned ID. IDs do not load history;
-supply your application dialogue on subsequent calls. Analysis persistence is enabled
-by default but saves only the selected customer message and its analysis, not a full
-transcript. New customer turns trigger analysis; assistant and tool continuations do not.
+supply your application dialogue on subsequent calls. Persistence saves completed customer messages, agent replies, and analyses by default.
+Record application greetings explicitly with `persist_messages`. New customer turns trigger analysis; assistant and tool continuations do not.
 
 - [Application integration](docs/application-integration.md): customer selection,
   storage, cancellation, and auditing.

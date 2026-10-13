@@ -27,6 +27,7 @@ from caesura_core.runtime import (
     AnalysisTimeout,
     ConversationOptions,
     CustomerTurn,
+    HostedStorageError,
     ProviderOutcome,
     ProviderRequest,
     StoreError,
@@ -37,6 +38,7 @@ from caesura_core.runtime import (
     require_conversation_id,
     sync_call,
 )
+from caesura_core.store import ConversationState
 from caesura_core.types import InjectedEvent
 
 from caesura_openai.adapters import (
@@ -52,8 +54,6 @@ from caesura_openai.lifecycle import provider_result, provider_result_async
 
 if TYPE_CHECKING:
     from types import TracebackType
-
-    from caesura_core.store import ConversationState
 
     from caesura_openai.types import CaesuraOpenAIOptions
 
@@ -76,7 +76,7 @@ def _clean_input(engine: CaesuraEngine | AsyncCaesuraEngine, state: Conversation
 
 def _inject_guidance(
     engine: CaesuraEngine | AsyncCaesuraEngine,
-    conv_id: str,
+    conv_id: str | None,
     kwargs: dict[str, Any],
     value: Any,
     state: ConversationState,
@@ -170,7 +170,7 @@ def _context(value: Any, engine: CaesuraEngine | AsyncCaesuraEngine) -> Analysis
 
 
 def _audit_request(
-    api: str, conv_id: str, context: AnalysisContext, kwargs: dict[str, Any], recommendation_ids: list[str]
+    api: str, conv_id: str | None, context: AnalysisContext, kwargs: dict[str, Any], recommendation_ids: list[str]
 ) -> ProviderRequest:
     # Provider headers and arbitrary transport extras may contain credentials.
     parameters = {
@@ -187,36 +187,59 @@ def _audit_request(
     )
 
 
-def _prepare(engine: CaesuraEngine, kwargs: dict[str, Any], responses: bool) -> tuple[str, AnalysisContext]:
-    conv_id = _resolve_conversation_id(kwargs.pop("caesura_conversation_id", None), engine.config.conversation_id)
+def _prepare(engine: CaesuraEngine, kwargs: dict[str, Any], responses: bool) -> tuple[str | None, AnalysisContext]:
+    supplied_id = kwargs.pop("caesura_conversation_id", None)
+    stateless = kwargs.pop("caesura_stateless", False)
+    if not isinstance(stateless, bool):
+        raise TypeError("caesura_stateless must be bool")
     explicit = kwargs.pop("caesura_context", None)
     if explicit is not None and not isinstance(explicit, AnalysisContext):
         raise TypeError("caesura_context must be AnalysisContext")
+    stateless = stateless or (explicit is not None and explicit.stateless)
+    if stateless and supplied_id is not None:
+        raise ValueError("Stateless calls must omit caesura_conversation_id")
+    conv_id = None if stateless else _resolve_conversation_id(supplied_id, engine.config.conversation_id)
     key = "input" if responses else "messages"
     value = deepcopy(kwargs.get(key)) if responses else deepcopy(list(kwargs.get(key, [])))
     if key in kwargs:
         kwargs[key] = value
     context = _snapshot_context(explicit) if explicit is not None else AnalysisContext()
     context = engine.prepare_context(context, conv_id)
+    context.stateless = stateless
     context.check()
     recommendation_ids: list[str] = []
     try:
-        value = _clean_input(engine, engine.read_state(conv_id), value)
+        state = ConversationState() if conv_id is None else engine.read_state(conv_id)
+        value = _clean_input(engine, state, value)
         context = engine.prepare_context(context if explicit is not None else _context(value, engine), conv_id)
+        context.stateless = stateless
         context.check()
-        engine.observe(conv_id, [], context=context)
+        transient = engine.observe(conv_id, [], context=context)
 
         def inject(state: ConversationState) -> None:
             recommendation_ids.extend(
                 _inject_guidance(engine, conv_id, kwargs, value, state, context, responses=responses)
             )
 
-        engine.update_state(conv_id, inject)
+        if conv_id is None:
+            inject(transient or state)
+        else:
+            engine.update_state(conv_id, inject)
+    except HostedStorageError:
+        raise  # Already reported by the engine; strict storage policy prevents provider work.
     except StoreError as error:
-        engine._report(conv_id, error)
+        if not (
+            any(c.error is error for c in engine.transcript_completions)
+            or any(c.error is error for c in engine.completions)
+        ):
+            engine._report(conv_id, error)
         if engine._options.failure_policy == "raise":
             raise
     context.check()
+    for completion in reversed(engine.completions):
+        if completion.context.invocation_id == context.invocation_id:
+            context.analysis_persist = completion.context.analysis_persist
+            break
     # Capture the parameters actually being forwarded, even when preparation failed open.
     try:
         if engine._options.on_provider_request:
@@ -237,7 +260,11 @@ def _prepare(engine: CaesuraEngine, kwargs: dict[str, Any], responses: bool) -> 
                 context.check()
                 raise StoreError("Finalized request audit failed") from error
     except StoreError as error:
-        engine._report(conv_id, error)
+        if not (
+            any(c.error is error for c in engine.transcript_completions)
+            or any(c.error is error for c in engine.completions)
+        ):
+            engine._report(conv_id, error)
         if engine._options.failure_policy == "raise":
             raise
     context.check()
@@ -303,36 +330,59 @@ async def _await_request_audit(engine: AsyncCaesuraEngine, request: ProviderRequ
 
 async def _prepare_async(
     engine: AsyncCaesuraEngine, kwargs: dict[str, Any], responses: bool
-) -> tuple[str, AnalysisContext]:
-    conv_id = _resolve_conversation_id(kwargs.pop("caesura_conversation_id", None), engine.config.conversation_id)
+) -> tuple[str | None, AnalysisContext]:
+    supplied_id = kwargs.pop("caesura_conversation_id", None)
+    stateless = kwargs.pop("caesura_stateless", False)
+    if not isinstance(stateless, bool):
+        raise TypeError("caesura_stateless must be bool")
     explicit = kwargs.pop("caesura_context", None)
     if explicit is not None and not isinstance(explicit, AnalysisContext):
         raise TypeError("caesura_context must be AnalysisContext")
+    stateless = stateless or (explicit is not None and explicit.stateless)
+    if stateless and supplied_id is not None:
+        raise ValueError("Stateless calls must omit caesura_conversation_id")
+    conv_id = None if stateless else _resolve_conversation_id(supplied_id, engine.config.conversation_id)
     key = "input" if responses else "messages"
     value = deepcopy(kwargs.get(key)) if responses else deepcopy(list(kwargs.get(key, [])))
     if key in kwargs:
         kwargs[key] = value
     context = _snapshot_context(explicit) if explicit is not None else AnalysisContext()
     context = engine.prepare_context(context, conv_id)
+    context.stateless = stateless
     context.check()
     recommendation_ids: list[str] = []
     try:
-        value = _clean_input(engine, await engine.read_state(conv_id), value)
+        state = ConversationState() if conv_id is None else await engine.read_state(conv_id)
+        value = _clean_input(engine, state, value)
         context = engine.prepare_context(context if explicit is not None else _context(value, engine), conv_id)
+        context.stateless = stateless
         context.check()
-        await engine.observe(conv_id, [], context=context)
+        transient = await engine.observe(conv_id, [], context=context)
 
         def inject(state: ConversationState) -> None:
             recommendation_ids.extend(
                 _inject_guidance(engine, conv_id, kwargs, value, state, context, responses=responses)
             )
 
-        await engine.update_state(conv_id, inject)
+        if conv_id is None:
+            inject(transient or state)
+        else:
+            await engine.update_state(conv_id, inject)
+    except HostedStorageError:
+        raise  # Already reported by the engine; strict storage policy prevents provider work.
     except StoreError as error:
-        engine._report(conv_id, error)
+        if not (
+            any(c.error is error for c in engine.transcript_completions)
+            or any(c.error is error for c in engine.completions)
+        ):
+            engine._report(conv_id, error)
         if engine._options.failure_policy == "raise":
             raise
     context.check()
+    for completion in reversed(engine.completions):
+        if completion.context.invocation_id == context.invocation_id:
+            context.analysis_persist = completion.context.analysis_persist
+            break
     # Capture the parameters actually being forwarded, even when preparation failed open.
     try:
         if engine._options.on_provider_request:
@@ -354,7 +404,11 @@ async def _prepare_async(
                 context.check()
                 raise StoreError("Finalized request audit failed") from error
     except StoreError as error:
-        engine._report(conv_id, error)
+        if not (
+            any(c.error is error for c in engine.transcript_completions)
+            or any(c.error is error for c in engine.completions)
+        ):
+            engine._report(conv_id, error)
         if engine._options.failure_policy == "raise":
             raise
     context.check()
@@ -488,8 +542,8 @@ class CaesuraOpenAI:
         name: str | None = None,
         calendar_id: str | None = None,
         event_id: str | None = None,
-    ) -> str:
-        """Create a CaesuraO conversation; reuse its ID as caesura_conversation_id on model calls."""
+    ) -> str | None:
+        """Create a conversation. Continue-policy failure returns None; opt into caesura_stateless for a model call."""
         return self._engine.create_conversation(options, context, name=name, calendar_id=calendar_id, event_id=event_id)
 
     def persist_messages(
@@ -607,8 +661,8 @@ class AsyncCaesuraOpenAI:
         name: str | None = None,
         calendar_id: str | None = None,
         event_id: str | None = None,
-    ) -> str:
-        """Create a CaesuraO conversation; reuse its ID as caesura_conversation_id on model calls."""
+    ) -> str | None:
+        """Create a conversation. Continue-policy failure returns None; opt into caesura_stateless for a model call."""
         return await self._engine.create_conversation(
             options, context, name=name, calendar_id=calendar_id, event_id=event_id
         )

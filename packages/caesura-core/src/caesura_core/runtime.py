@@ -35,6 +35,10 @@ class StoreError(CaesuraError):
     pass
 
 
+class HostedStorageError(StoreError):
+    """Hosted transcript storage failed; application persistence hooks are separate."""
+
+
 class AnalysisTimeout(TransportError, TimeoutError):
     pass
 
@@ -70,7 +74,8 @@ class CustomerTurn:
     """Explicit trusted selection, independent of provider messages.
 
     Reuse id for retries/continuations; use a new id for another identical utterance.
-    Only include real participant dialogue in background, never tools/RAG/instructions.
+    The selected message must have source role user. Only include real participant
+    dialogue in background, never tools/RAG/instructions.
     """
 
     id: str
@@ -99,6 +104,10 @@ class AnalysisContext:
     sdk_identity: SdkIdentity | None = None
     agent_message_id: str | None = None
     """Optional stable ID for the Agent output, reused for application-level retries."""
+
+    stateless: bool = False
+    """Explicit one-shot analysis without a conversation or retained guidance state."""
+    analysis_persist: bool | None = None
 
     def check(self) -> None:
         if self.cancellation.cancelled:
@@ -167,9 +176,21 @@ class TranscriptMessage:
     status: Literal["completed", "partial", "cancelled", "failed"] = "completed"
 
 
+@dataclass(frozen=True)
+class HostedTranscriptMessage:
+    """Backend message identity allocated from a conversation's numeric sequence."""
+
+    id: int
+    role: Literal["customer", "agent"]
+    text: str
+    name: str | None = None
+    status: Literal["completed"] = "completed"
+    speaker_index: int | None = None
+
+
 @dataclass
 class TranscriptRecord:
-    conversation_id: str
+    conversation_id: str | None
     message: TranscriptMessage
     correlation: Correlation
 
@@ -182,11 +203,12 @@ class TranscriptCompletion:
 
 @dataclass
 class AnalysisCompletion:
-    conversation_id: str
+    conversation_id: str | None
     context: AnalysisContext
     result: AnalyzeResult | None = None
     error: BaseException | None = None
     status: str = "completed"
+    request: AnalyzeRequestBody | None = None
 
 
 @dataclass(frozen=True)
@@ -197,6 +219,7 @@ class Correlation:
     metadata: dict[str, Any] = field(default_factory=dict)
     conversation_id: str | None = None
     sdk_identity: SdkIdentity | None = None
+    analysis_persist: bool | None = None
 
 
 def correlation(context: AnalysisContext) -> Correlation:
@@ -209,6 +232,7 @@ def correlation(context: AnalysisContext) -> Correlation:
         deepcopy(context.metadata),
         context.conversation_id,
         context.sdk_identity,
+        context.analysis_persist,
     )
 
 
@@ -229,7 +253,7 @@ class ProviderRequest:
     """Detached SDK-prepared parameters, not wire bytes. Headers are excluded."""
 
     api: str
-    conversation_id: str
+    conversation_id: str | None
     correlation: Correlation
     parameters: dict[str, Any]
     recommendation_ids: list[str] = field(default_factory=list)

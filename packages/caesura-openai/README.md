@@ -20,6 +20,7 @@ with create_caesura(OpenAI(), CaesuraOpenAIOptions(mode="sync")) as client:
         model="gpt-5.4-mini",
         input="Can you help me?",
         caesura_conversation_id=conversation_id,
+        caesura_stateless=conversation_id is None,
         caesura_context=AnalysisContext(
             turn=CustomerTurn("customer-message-1", AnalyzeMessage("user", "Can you help me?")),
         ),
@@ -27,7 +28,10 @@ with create_caesura(OpenAI(), CaesuraOpenAIOptions(mode="sync")) as client:
     print(response.output_text)
 ```
 
-Save the returned conversation ID and reuse it on later calls. Use a distinct customer
+Save a successfully returned conversation ID and reuse it on later calls.
+With continue policy, creation failure returns `None`; `caesura_stateless=True`
+explicitly permits a one-shot call without saved conversation state. Fallback respects
+`mode`; choose `"sync"` for same-call guidance. Use a distinct customer
 message ID for each new turn and reuse it on retries. The SDK does not fetch history.
 
 For async applications, use `create_async_caesura(AsyncOpenAI(), options)` and await
@@ -40,14 +44,15 @@ with `messages` and the same `caesura_conversation_id` / `caesura_context` optio
 |---|---|
 | `mode="async"` (default) | Analyze in the background; guidance is available to later calls |
 | `mode="sync"` | Await analysis before the current model call |
-| `persist=True` (default) | Save the selected customer utterance and analysis via HTTP |
-| `failure_policy="continue"` (default) | Report analysis/storage errors and allow the model call |
+| `persist=True` (default) | Save customer messages, completed agent replies, and analyses to CaesuraO |
+| `failure_policy="continue"` (default) | Report hosted-storage errors and try stateless analysis; analysis errors still allow the model call |
 | `failure_policy="raise"` | Fail required foreground work before invoking the model |
 | `speaker_names=SpeakerNames(agent="Agent", customer="Customer")` | Participant labels; default indices are agent 0 and customer 1 |
 
 Analysis mode is independent of Python's sync/async client type. An authoritative
-conversation ID is required even with `persist=False`. Full transcript storage uses
-the separate `persist_transcript` hook.
+conversation ID is required for stateful calls even with `persist=False`. Completed
+customer messages and agent replies are saved by default. Use
+`persist_transcript` for an additional application-owned archive, including partial output.
 
 New customer turns trigger analysis. Earlier assistant dialogue provides background;
 tool/RAG content should be excluded with explicit `CustomerTurn` selection. Keep your

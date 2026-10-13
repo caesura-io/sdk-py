@@ -15,26 +15,31 @@ from caesura_core import AnalysisContext, AnalyzeMessage, CaesuraConfig, Caesura
 engine = CaesuraEngine(CaesuraConfig(mode="sync"))
 try:
     conversation_id = engine.create_conversation(name="Example")
-    engine.observe(
+    state = engine.observe(
         conversation_id,
         [],
         context=AnalysisContext(
+            stateless=conversation_id is None,
             turn=CustomerTurn("message-1", AnalyzeMessage("user", "I need help")),
         ),
     )
-    for recommendation in engine.read_state(conversation_id).recommendations:
+    if conversation_id is not None:
+        state = engine.read_state(conversation_id)
+    for recommendation in (state.recommendations if state is not None else []):
         print(recommendation.analysis)
 finally:
-    engine.close()
+    engine.close(raise_errors=False)
 ```
 
-Reuse the authoritative conversation ID and supply history explicitly. New customer
-turns need distinct message IDs; retries reuse the same ID. `AsyncCaesuraEngine`
+Creation returns `None` on ordinary continue-policy failure; explicit stateless
+observation in sync mode returns temporary guidance state. Background results are
+available through completion hooks and drain, with no cross-call guidance. Otherwise reuse the authoritative
+conversation ID and supply history explicitly. New customer turns need distinct message IDs; retries reuse the same ID. `AsyncCaesuraEngine`
 provides awaited equivalents.
 
 The default `mode="async"` runs analysis in the background; `mode="sync"` waits.
-`persist=True` saves the selected customer utterance and analysis through HTTP, not a
-complete transcript.
+`persist=True` saves analyses and completed customer/agent dialogue through HTTP.
+Record application greetings explicitly with `persist_messages`; they do not trigger analysis.
 
 Analyses may be JSON values or plain text. Preserve `AnalyzeResult.analysis`; credit
 usage is available separately. Use `MemoryCaesuraStore` for process-local guidance,

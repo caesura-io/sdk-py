@@ -46,6 +46,7 @@ def recorded_api() -> Iterator[tuple[str, list[tuple[str, dict[str, Any]]]]]:
                 self.send_error(404)
                 return
             self.send_response(200)
+            self.send_header("x-request-id", "provider-fixture-request")
             self.send_header("Content-Type", content_type)
             self.send_header("Content-Length", str(len(content)))
             self.end_headers()
@@ -79,15 +80,16 @@ async def test_recorded_four_turn_wire_contract(
     client: Any = factory(
         cls(api_key="fixture", base_url=url, max_retries=0),
         CaesuraOpenAIOptions(
+            conversation_id="existing-id",
             api_key="fixture",
             base_url=url,
             mode="sync",
-            auto_create_conversation=True,
             inject=InjectConfig(
                 skill_prompt="", template="{analysis}", placement="after-last-analyzed", as_role="developer"
             ),
         ),
     )
+    cid = await client.create_conversation() if asynchronous else client.create_conversation()
     history: list[dict[str, Any]] = []
     expected_backend: list[dict[str, Any]] = []
     expected_provider: list[dict[str, Any]] = []
@@ -99,7 +101,7 @@ async def test_recorded_four_turn_wire_contract(
             endpoint = ("chat" if turn % 2 else "responses") if api == "mixed" else api
             resource = client.chat.completions if endpoint == "chat" else client.responses
             key = "messages" if endpoint == "chat" else "input"
-            result = resource.create(model="fixture", stream=stream, **{key: history})
+            result = resource.create(model="fixture", stream=stream, caesura_conversation_id=cid, **{key: history})
             if asynchronous:
                 result = await result
             if stream:
@@ -107,13 +109,19 @@ async def test_recorded_four_turn_wire_contract(
                 if endpoint == "chat":
                     assert chunks[0].choices[0].delta.content == "OK"
                     assert chunks[-1].choices[0].finish_reason == "stop"
+                    assert chunks[-1].usage.total_tokens == 12
                 else:
                     assert chunks[0].delta == "OK"
                     assert chunks[-1].response.output_text == "OK"
+                    assert chunks[-1].response.usage.total_tokens == 12
             elif endpoint == "chat":
                 assert result.choices[0].message.content == "OK"
+                assert result.usage.total_tokens == 12
+                assert result._request_id == "provider-fixture-request"
             else:
                 assert result.output_text == "OK"
+                assert result.usage.total_tokens == 12
+                assert result._request_id == "provider-fixture-request"
             expected_backend.append(
                 {
                     "speakerRole": "user",
@@ -122,6 +130,11 @@ async def test_recorded_four_turn_wire_contract(
                     "text": "שלום 😀",
                 }
             )
+            if role == "assistant":
+                expected_provider.append(message)
+                assert requests[-1][1][key] == expected_provider
+                history = json.loads(json.dumps(requests[-1][1][key]))
+                continue
             body = [body for path, body in requests if path == "/api/analyze"][-1]
             assert body == {
                 "messages": expected_backend,
@@ -131,9 +144,17 @@ async def test_recorded_four_turn_wire_contract(
                 "persist": True,
                 "calculateSimilarities": True,
             }
-            expected_provider.extend([message, {"role": "developer", "content": f"guidance {turn}"}])
+            expected_provider.extend(
+                [message, {"role": "developer", "content": f"guidance {turn if same_speaker else (turn + 1) // 2}"}]
+            )
             assert requests[-1][1][key] == expected_provider
-            expected_backend.append({"speakerRole": "assistant", "speakerIndex": -1, "text": f"guidance {turn}"})
+            expected_backend.append(
+                {
+                    "speakerRole": "assistant",
+                    "speakerIndex": -1,
+                    "text": f"guidance {turn if same_speaker else (turn + 1) // 2}",
+                }
+            )
             # Reuse serialized injected input even when switching APIs.
             history = json.loads(json.dumps(requests[-1][1][key]))
         assert sum(path == "/api/conversation" for path, _ in requests) == 1

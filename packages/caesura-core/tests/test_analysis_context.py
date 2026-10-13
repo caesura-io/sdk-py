@@ -39,6 +39,9 @@ async def test_repeated_dialogue_is_persisted_instead_of_analysis(
             await engine.observe("same-conversation", [message])
         else:
             engine.observe("same-conversation", [message])
+    if role == "assistant":
+        assert not route.called
+        return
     bodies = [json.loads(call.request.content) for call in route.calls]
     dialogue = {
         "speakerRole": "user",
@@ -65,11 +68,11 @@ async def test_trimmed_anchor_history_precedes_current_dialogue(chars: int | Non
         CaesuraConfig(api_key="offline-test", mode="sync", send=SendConfig(max_messages=2, max_input_chars=chars))
     )
     route = respx.post("https://api.caesurao.com/api/analyze").respond(200, json="old")
-    await engine.observe("same", [AnalyzeMessage(speaker_role="assistant", text="First")])
-    await engine.observe("same", [AnalyzeMessage(speaker_role="assistant", text="Next")])
+    await engine.observe("same", [AnalyzeMessage(speaker_role="user", text="First")])
+    await engine.observe("same", [AnalyzeMessage(speaker_role="user", text="Next")])
     assert json.loads(route.calls.last.request.content)["messages"] == [
         {"speakerRole": "assistant", "speakerIndex": -1, "text": "old"},
-        {"speakerRole": "user", "speakerName": "Agent", "speakerIndex": 0, "text": "Next"},
+        {"speakerRole": "user", "speakerName": "Customer", "speakerIndex": 1, "text": "Next"},
     ]
 
 
@@ -80,13 +83,13 @@ async def test_customer_and_agent_both_use_backend_user_role() -> None:
     await engine.observe(
         "conversation",
         [
-            AnalyzeMessage(speaker_role="user", text="Question"),
             AnalyzeMessage(speaker_role="assistant", text="Answer"),
+            AnalyzeMessage(speaker_role="user", text="Question"),
         ],
     )
     assert json.loads(route.calls.last.request.content)["messages"] == [
-        {"speakerRole": "user", "speakerName": "Customer", "speakerIndex": 1, "text": "Question"},
         {"speakerRole": "user", "speakerName": "Agent", "speakerIndex": 0, "text": "Answer"},
+        {"speakerRole": "user", "speakerName": "Customer", "speakerIndex": 1, "text": "Question"},
     ]
 
 
@@ -112,42 +115,41 @@ async def test_four_identical_turns_keep_two_distinct_dashboard_speakers(
     history: list[AnalyzeMessage] = []
     for index in (0, 1, 0, 1):
         message = AnalyzeMessage(
-            speaker_role="user" if explicit_indices or index == 0 else "assistant",
+            speaker_role="user" if index == 0 else "assistant",
             text="text text text.",
             speaker_name="Customer" if index == 0 else "Agent",
-            speaker_index=index if explicit_indices else None,
+            speaker_index=(42 if index == 0 else 17) if explicit_indices else None,
         )
         history.append(message)
         if isinstance(engine, AsyncCaesuraEngine):
             await engine.observe("same-conversation", history)
         else:
             engine.observe("same-conversation", history)
-        expected = []
-        for turn, previous in enumerate(history, 1):
-            expected.append(
-                {
-                    "speakerRole": "user",
-                    "speakerName": previous.speaker_name,
-                    "speakerIndex": (turn - 1) % 2 if explicit_indices else turn % 2,
-                    "text": "text text text.",
-                }
-            )
-            if turn < len(history):
-                expected.append(
-                    {
-                        "speakerRole": "assistant",
-                        "speakerIndex": -1,
-                        "text": json.dumps(
-                            {"recommendation": f"Guidance {turn}"}, ensure_ascii=False, separators=(",", ":")
-                        ),
-                    }
-                )
-        assert json.loads(route.calls.last.request.content)["messages"] == expected
-    assert [row["text"] for row in rows] == ["text text text."] * 4
-    assert [row["speakerIndex"] for row in rows] == ([0, 1, 0, 1] if explicit_indices else [1, 0, 1, 0])
-    # The dashboard resolves each row's label using the final name for its index.
-    names_by_index = {row["speakerIndex"]: row["speakerName"] for row in rows}
-    assert [names_by_index[row["speakerIndex"]] for row in rows] == ["Customer", "Agent", "Customer", "Agent"]
+    assert len(rows) == 2  # Agent replies are background, never independent analysis triggers.
+    assert [row["speakerIndex"] for row in rows] == ([42, 42] if explicit_indices else [1, 1])
+    assert [row["speakerName"] for row in rows] == ["Customer", "Customer"]
+    body = json.loads(route.calls.last.request.content)
+    assert body["messages"] == [
+        {
+            "speakerRole": "user",
+            "speakerName": "Customer",
+            "speakerIndex": 42 if explicit_indices else 1,
+            "text": "text text text.",
+        },
+        {"speakerRole": "assistant", "speakerIndex": -1, "text": '{"recommendation":"Guidance 1"}'},
+        {
+            "speakerRole": "user",
+            "speakerName": "Agent",
+            "speakerIndex": 17 if explicit_indices else 0,
+            "text": "text text text.",
+        },
+        {
+            "speakerRole": "user",
+            "speakerName": "Customer",
+            "speakerIndex": 42 if explicit_indices else 1,
+            "text": "text text text.",
+        },
+    ]
 
 
 def test_explicit_speaker_index_survives_character_trimming() -> None:
@@ -168,7 +170,9 @@ async def test_retained_analyses_anchor_to_original_occurrences(same_speaker: bo
     """Keeping only recent guidance must not shift it to an earlier identical turn."""
     from caesura_core import CadenceConfig
 
-    engine = AsyncCaesuraEngine(CaesuraConfig(api_key="offline", mode="sync", cadence=CadenceConfig(every_turns=2)))
+    engine = AsyncCaesuraEngine(
+        CaesuraConfig(api_key="offline", mode="sync", cadence=CadenceConfig(every_turns=2 if same_speaker else 1))
+    )
     responses = [{"recommendation": "first"}, {"recommendation": "third"}]
     route = respx.post("https://api.caesurao.com/api/analyze").mock(
         side_effect=[httpx.Response(200, json=value) for value in responses]

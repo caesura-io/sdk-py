@@ -53,6 +53,15 @@ def main() -> None:
                     "assert all(pathlib.Path(m.__file__).is_relative_to(sys.prefix) "
                     "for m in (caesura_core, caesura_openai)); "
                     "print('Installed OpenAI', openai.__version__)"
+                    "; from importlib.metadata import version, requires; "
+                    "from packaging.requirements import Requirement; "
+                    "core = version('caesura-io-core'); "
+                    "assert version('caesura-io-openai') == core; "
+                    "dependencies = {r.name: r for r in map(Requirement, requires('caesura-io-openai'))}; "
+                    "assert str(dependencies['caesura-io-core'].specifier) == "
+                    "f'<{int(core.split(\".\")[0]) + 1}.0.0,>={core}'; "
+                    "assert str(dependencies['openai'].specifier) == '<4.0.0,>=2.0.0'; "
+                    "print('Validated release dependencies for', core)"
                 ),
             ],
             check=True,

@@ -7,7 +7,19 @@ from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Any, TypeAlias
 
 if TYPE_CHECKING:
-    from collections.abc import Callable
+    from collections.abc import Awaitable, Callable
+
+    from caesura_core.runtime import (
+        AnalysisCompletion,
+        AnalysisTransport,
+        AsyncAnalysisTransport,
+        AsyncRequestAudit,
+        FailurePolicy,
+        ProviderOutcome,
+        RequestAudit,
+        TranscriptRecord,
+    )
+    from caesura_core.store import AsyncCaesuraStore, CaesuraStore
 
 if sys.version_info >= (3, 11):
     from typing import Literal
@@ -225,6 +237,9 @@ class AnalyzeResult:
     is_same: bool | None = None
     """Optional backend deduplication metadata, independent of the analysis shape."""
 
+    usage: dict[str, Any] = field(default_factory=dict)
+    request_metadata: dict[str, Any] = field(default_factory=dict)
+
 
 # -- Event variants --------------------------------------------------------
 
@@ -311,7 +326,22 @@ class ErrorEvent:
     error: Any = None
 
 
-CaesuraEvent = RequestEvent | ResponseEvent | SkippedEvent | BufferedEvent | DedupedEvent | InjectedEvent | ErrorEvent
+@dataclass
+class ConversationCreatedEvent:
+    type: Literal["conversation-created"] = field(default="conversation-created", init=False)
+    conversation_id: str = ""
+
+
+CaesuraEvent = (
+    RequestEvent
+    | ResponseEvent
+    | SkippedEvent
+    | BufferedEvent
+    | DedupedEvent
+    | InjectedEvent
+    | ErrorEvent
+    | ConversationCreatedEvent
+)
 """Structured lifecycle events for debugging/observability."""
 
 
@@ -337,17 +367,13 @@ class CaesuraConfig:
     """``'async'`` (default) never blocks the model; ``'sync'`` awaits inline."""
 
     conversation_id: str | None = None
-    """Backend conversation ID, or a local label with auto_create_conversation=True; overridable per call."""
+    """Authoritative conversation ID; required on stateful calls, overridable per call."""
 
     persist: bool = True
-    """Save analyses to an existing backend conversation. Set False to opt out."""
+    """Save each analysis and its last submitted utterance. This is not a complete transcript archive."""
 
     auto_create_conversation: bool = False
-    """Treat conversation IDs as local labels and create a backend conversation on first analysis.
-
-    Only applies when persist=True. The mapping lives in the conversation store;
-    clearing or evicting that state allows a new backend conversation to be created.
-    """
+    """Removed capability. True raises with migration guidance; create explicitly instead."""
 
     calculate_similarities: bool = True
     """Calculate server-side recommendation similarities; set a threshold to suppress duplicates."""
@@ -370,8 +396,26 @@ class CaesuraConfig:
     timeout_ms: int = 8000
     """Request timeout in milliseconds."""
 
-    store: Any = None
-    """Store implementation.  Defaults to in-memory.  Type is ``CaesuraStore | None``."""
+    transport: AnalysisTransport | AsyncAnalysisTransport | None = None
+    """Application-owned analysis service; None selects the HTTP transport."""
+
+    failure_policy: FailurePolicy | Literal["continue", "raise"] = "continue"
+    """Foreground analysis/store failures continue by default; cancellation always propagates."""
+
+    persist_transcript: Callable[[TranscriptRecord], None | Awaitable[None]] | None = None
+    """Awaited application-owned dialogue storage, independent of analysis cadence."""
+
+    persist_result: Callable[[AnalysisCompletion], None | Awaitable[None]] | None = None
+    """Critical result persistence. Awaited before buffering and foreground provider calls."""
+
+    on_provider_request: RequestAudit | AsyncRequestAudit | None = None
+    """Awaited finalized-request audit hook, before calling the underlying provider."""
+
+    on_provider_outcome: Callable[[ProviderOutcome], None | Awaitable[None]] | None = None
+    """Observational opened/terminal provider lifecycle hook; ordinary callback errors are contained."""
+
+    store: CaesuraStore | AsyncCaesuraStore | None = None
+    """Explicit-write sync/async store. Defaults to in-memory; async engines offload blocking operations."""
 
     on_error: Callable[[Any], None] | None = None
     """Error hook for observability."""
@@ -416,7 +460,6 @@ class ResolvedConfig:
     timeout_ms: int
     on_error: Callable[[Any], None]
     include_credit_usage: bool
-    auto_create_conversation: bool = False
     call_type: str | None = None
     conversation_id: str | None = None
     similarity_threshold: float | None = None

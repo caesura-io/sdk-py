@@ -129,14 +129,23 @@ def collect_openai_responses_messages(
     return collect_openai_messages(user_input, speaker_names)
 
 
-def apply_skill_prompt_responses(instructions: Any, inject: ResolvedInjectConfig) -> Any:
-    """Keep the skill in instructions and avoid adding it again on reused requests."""
+def apply_skill_prompt_responses(instructions: Any, inject: ResolvedInjectConfig, *, user_input: Any = None) -> Any:
+    """Append to instructions only when no eligible instruction source contains the skill."""
     skill = inject.skill_prompt
     if not skill or not skill.strip():
         return instructions
     existing = instructions if isinstance(instructions, str) else ""
     if skill in existing:
         return existing
+    if isinstance(user_input, list):
+        for item in user_input:
+            message = _message_dict(item)
+            if (
+                message.get("type", "message") == "message"
+                and message.get("role") in ("system", "developer")
+                and skill in get_message_text(message)
+            ):
+                return instructions
     return f"{existing}\n\n{skill}" if existing else skill
 
 
@@ -144,28 +153,30 @@ def apply_skill_prompt_openai(
     messages: list[dict[str, Any]],
     inject: ResolvedInjectConfig,
 ) -> tuple[list[dict[str, Any]], bool]:
-    """Inject the skill prompt into the messages array.
+    """Append the skill to the last system/developer message, or prepend a system message.
+
+    A blank skill or its exact text in any existing instruction message is a no-op.
+    Preserve instruction roles and structured content independently of analysis placement.
 
     Returns the (possibly modified) messages array and a boolean indicating
     whether the skill prompt was successfully injected.
     """
-    if not inject.skill_prompt:
+    if not inject.skill_prompt or not inject.skill_prompt.strip():
         return messages, False
 
     # The skill is an instruction, independent of the recommendation's role.
     target_roles = {"developer", "system"}
 
     last_match_idx = -1
-    for i in range(len(messages) - 1, -1, -1):
-        if messages[i].get("role") in target_roles:
+    for i, message in enumerate(messages):
+        if message.get("role") in target_roles:
+            if inject.skill_prompt in get_message_text(message):
+                return messages, False
             last_match_idx = i
-            break
 
     if last_match_idx >= 0:
         # Append to existing
         m = messages[last_match_idx]
-        if inject.skill_prompt in get_message_text(m):
-            return messages, False
         new_content = m.get("content", "")
         if isinstance(new_content, list):
             new_content = list(new_content)
@@ -180,7 +191,7 @@ def apply_skill_prompt_openai(
     else:
         # Prepend new message
         new_msg = {
-            "role": "developer" if inject.as_role == "developer" else "system",
+            "role": "system",
             "content": inject.skill_prompt,
         }
         return [new_msg, *messages], True
@@ -192,6 +203,7 @@ def inject_blocks_openai(
     inject: ResolvedInjectConfig,
     hash_fn: Callable[[str, str], str],
     speaker_names: SpeakerNames | None = None,
+    dialogue_positions: list[int] | None = None,
 ) -> tuple[list[Any], list[InjectedBlock]]:
     """Inject rendered recommendation blocks into the OpenAI messages array."""
     if not blocks:
@@ -211,6 +223,9 @@ def inject_blocks_openai(
     # placement == 'after-last-analyzed' -> interleave them chronologically
     hash_to_positions: dict[str, list[int]] = {}
     dialogue = _dialogue_items(result, speaker_names)
+    if dialogue_positions is not None:
+        selected = set(dialogue_positions)
+        dialogue = [(position, message) for position, message in dialogue if position in selected]
     for position, message in dialogue:
         h = hash_fn(message.speaker_name or "", message.text)
         hash_to_positions.setdefault(h, []).append(position)

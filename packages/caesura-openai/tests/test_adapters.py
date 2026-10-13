@@ -116,14 +116,14 @@ class TestApplySkillPromptOpenAI:
         assert injected is True
         assert out[0]["content"] == "You are a bot.\n\nBe helpful."
 
-    def test_prepends_new_developer_message_if_none_exists(self) -> None:
+    def test_prepends_system_message_with_developer_analysis_role(self) -> None:
         messages = [{"role": "user", "content": "Hi"}]
         inject = self._make_inject("developer")
         out, injected = apply_skill_prompt_openai(messages, inject)
 
         assert injected is True
         assert len(out) == 2
-        assert out[0]["role"] == "developer"
+        assert out[0]["role"] == "system"
         assert out[0]["content"] == "Be helpful."
 
     def test_target_role_system_also_matches_developer(self) -> None:

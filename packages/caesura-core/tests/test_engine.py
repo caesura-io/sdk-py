@@ -56,12 +56,8 @@ async def test_persistence_request_defaults_and_opt_out(async_client: bool, pers
         engine.observe("conversation", messages)
     body = json.loads(route.calls.last.request.content)
     assert body["persist"] is (persist is not False)
-    if persist is False:
-        assert "conversationId" not in body
-        assert "sessionId" not in body
-    else:
-        assert body["conversationId"] == "conversation"
-        assert body["sessionId"] == "conversation"
+    assert body["conversationId"] == "conversation"
+    assert body["sessionId"] == "conversation"
 
 
 @pytest.mark.parametrize("every_turns,expected", [(1, [1, 2, 3, 4]), (2, [1, 3])])
@@ -89,83 +85,35 @@ async def test_core_advances_turns_and_honors_cadence(
     assert not engine.store.get("conversation").in_flight
 
 
-def test_background_thread_reserves_turn_before_starting() -> None:
-    events: list[CaesuraEvent] = []
-    engine = CaesuraEngine(CaesuraConfig(api_key="key", on_event=events.append))
-    messages = [AnalyzeMessage(speaker_role="user", text="Hello", speaker_index=42)]
+def test_background_threads_queue_and_snapshot_before_starting() -> None:
+    engine = CaesuraEngine(CaesuraConfig(api_key="key"))
+    messages = [AnalyzeMessage("user", "Hello", speaker_index=42)]
     with patch("caesura_core.engine.threading.Thread") as thread, patch.object(engine.client, "analyze") as analyze:
-        analyze.return_value = AnalyzeResult({"recommendation": "Ask"})
+        analyze.return_value = AnalyzeResult("Ask")
         engine.observe("conversation", messages)
         engine.observe("conversation", messages)
-        thread.assert_called_once()
-        assert engine.store.get("conversation").in_flight
-        assert any(isinstance(event, SkippedEvent) and event.reason == "in-flight" for event in events)
-        # Run the delayed worker after a subsequent observation advanced the turn.
+        assert thread.call_count == 2
+        assert not engine.store.get("conversation").in_flight
         messages[0].text = "Edited after observe"
-        messages[0].speaker_index = 17
-        messages[0].speaker_name = "Changed participant"
-        messages.append(AnalyzeMessage(speaker_role="assistant", text="Later turn"))
-        kwargs = thread.call_args.kwargs
-        kwargs["target"](*kwargs["args"])
-        body = analyze.call_args.args[0]
-        assert body.current_user == "Agent"
-        assert [message.to_dict() for message in body.messages] == [
-            {"speakerRole": "user", "speakerName": "Customer", "speakerIndex": 42, "text": "Hello"}
-        ]
-        from caesura_core import build_analyze_messages
-
-        context = build_analyze_messages(
-            [
-                AnalyzeMessage(speaker_role="user", text="Hello", speaker_index=42),
-                AnalyzeMessage(speaker_role="user", text="Hello", speaker_index=42),
-            ],
-            engine.store.get("conversation"),
-        )
-        assert [message.to_dict() for message in context] == [
-            {"speakerRole": "user", "speakerName": "Customer", "speakerIndex": 42, "text": "Hello"},
-            {"speakerRole": "assistant", "speakerIndex": -1, "text": '{"recommendation":"Ask"}'},
-            {"speakerRole": "user", "speakerName": "Customer", "speakerIndex": 42, "text": "Hello"},
-        ]
-    assert engine.store.get("conversation").recommendations[0].created_at_turn == 1
-    assert not engine.store.get("conversation").in_flight
+        for call in thread.call_args_list:
+            call.kwargs["target"](*call.kwargs["args"])
+        assert [call.args[0].messages[-1].text for call in analyze.call_args_list] == ["Hello", "Hello"]
+        assert [call.args[0].messages[-1].speaker_index for call in analyze.call_args_list] == [42, 42]
+        assert [rec.created_at_turn for rec in engine.store.get("conversation").recommendations] == [1, 2]
 
 
-async def test_background_task_reserves_turn_before_scheduling() -> None:
-    events: list[CaesuraEvent] = []
-    engine = AsyncCaesuraEngine(CaesuraConfig(api_key="key", on_event=events.append))
-    messages = [AnalyzeMessage(speaker_role="user", text="Hello", speaker_index=42)]
-    analyze = AsyncMock(return_value=AnalyzeResult({"recommendation": "Ask"}))
+async def test_background_tasks_queue_and_snapshot_before_scheduling() -> None:
+    engine = AsyncCaesuraEngine(CaesuraConfig(api_key="key"))
+    messages = [AnalyzeMessage("user", "Hello", speaker_index=42)]
+    analyze = AsyncMock(return_value=AnalyzeResult("Ask"))
     with patch.object(engine.client, "analyze", analyze):
         await engine.observe("conversation", messages)
         await engine.observe("conversation", messages)
-        assert engine.store.get("conversation").in_flight
-        assert any(isinstance(event, SkippedEvent) and event.reason == "in-flight" for event in events)
         messages[0].text = "Edited after observe"
-        messages[0].speaker_index = 17
-        messages[0].speaker_name = "Changed participant"
-        messages.append(AnalyzeMessage(speaker_role="assistant", text="Later turn"))
-        await asyncio.gather(*engine._bg_tasks)
-        analyze.assert_awaited_once()
-        body = analyze.call_args.args[0]
-        assert body.current_user == "Agent"
-        assert [message.to_dict() for message in body.messages] == [
-            {"speakerRole": "user", "speakerName": "Customer", "speakerIndex": 42, "text": "Hello"}
-        ]
-        assert engine.store.get("conversation").recommendations[0].created_at_turn == 1
-        await engine.observe("conversation", messages)
-        await asyncio.gather(*engine._bg_tasks)
-        assert analyze.await_count == 2
-        assert [message.to_dict() for message in analyze.call_args.args[0].messages] == [
-            {"speakerRole": "assistant", "speakerIndex": -1, "text": '{"recommendation":"Ask"}'},
-            {
-                "speakerRole": "user",
-                "speakerName": "Changed participant",
-                "speakerIndex": 17,
-                "text": "Edited after observe",
-            },
-            {"speakerRole": "user", "speakerName": "Agent", "speakerIndex": 0, "text": "Later turn"},
-        ]
-    assert not engine.store.get("conversation").in_flight
+        await engine.drain()
+    assert analyze.await_count == 2
+    assert [call.args[0].messages[-1].text for call in analyze.call_args_list] == ["Hello", "Hello"]
+    assert [call.args[0].messages[-1].speaker_index for call in analyze.call_args_list] == [42, 42]
 
 
 @pytest.mark.parametrize("async_client", [False, True])
@@ -239,6 +187,7 @@ async def test_skipped_observations_advance_turn_ttl(async_client: bool) -> None
             await engine.observe("conversation", [])
         else:
             engine.observe("conversation", [])
+        state = engine.store.get("conversation")
         assert state.turn == 2
         assert select_active(state, engine.config.inject, 0) == []
         assert analyze.call_count == 1
@@ -325,8 +274,8 @@ async def test_send_limits_apply_to_request_body(async_client: bool, send: SendC
     engine = AsyncCaesuraEngine(config) if async_client else CaesuraEngine(config)
     route = respx.post("https://api.caesurao.com/api/analyze").mock(return_value=httpx.Response(200, json={}))
     collected = [
-        AnalyzeMessage(speaker_role="user", text="0123456789"),
-        AnalyzeMessage(speaker_role="assistant", text="abcdefghij"),
+        AnalyzeMessage(speaker_role="assistant", text="0123456789"),
+        AnalyzeMessage(speaker_role="user", text="abcdefghij"),
     ]
     if isinstance(engine, AsyncCaesuraEngine):
         await engine.observe("conversation", collected)
@@ -358,7 +307,7 @@ async def test_speaker_names_fill_missing_names_without_overriding_explicit_name
         AnalyzeMessage(speaker_role="user", text="Hello"),
         AnalyzeMessage(speaker_role="assistant", text="Welcome"),
         AnalyzeMessage(speaker_role="user", text="Question", speaker_name="Alice"),
-        AnalyzeMessage(speaker_role="assistant", text="Answer", speaker_name="Bob"),
+        AnalyzeMessage(speaker_role="user", text="Answer", speaker_name="Bob"),
     ]
     if isinstance(engine, AsyncCaesuraEngine):
         await engine.observe("conversation", collected)
@@ -395,6 +344,9 @@ async def test_current_user_is_configured_agent_regardless_of_latest_speaker(
         await engine.observe("conversation", messages)
     else:
         engine.observe("conversation", messages)
+    if agent_speaking:
+        assert not route.called
+        return
     body = json.loads(route.calls.last.request.content)
     assert body["currentUser"] == (agent_name or "Agent")
     assert body["messages"][-1]["speakerName"] == "Explicit speaker"
@@ -480,14 +432,14 @@ async def test_failed_task_scheduling_closes_coroutine_and_allows_retry() -> Non
         await engine.observe("one", [AnalyzeMessage(speaker_role="user", text="Hello")])
         await asyncio.gather(*engine._bg_tasks)
         analyze.assert_awaited_once()
-    assert engine.store.get("one").turn == 2
+    assert engine.store.get("one").turn == 1
 
 
 @pytest.mark.parametrize("async_client", [False, True])
 @pytest.mark.parametrize("text", ["", " \t\n", "\u2003\u00a0"])
 async def test_blank_dialogue_does_not_create_or_analyze(async_client: bool, text: str) -> None:
     events: list[CaesuraEvent] = []
-    config = CaesuraConfig(api_key="test", mode="sync", auto_create_conversation=True, on_event=events.append)
+    config = CaesuraConfig(api_key="test", mode="sync", on_event=events.append)
     engine = AsyncCaesuraEngine(config) if async_client else CaesuraEngine(config)
     with (
         patch.object(engine.client, "create_conversation") as create,
@@ -541,14 +493,14 @@ def test_failed_thread_scheduling_reports_error_and_allows_retry(failure: str) -
         kwargs = thread.call_args.kwargs
         kwargs["target"](*kwargs["args"])
         analyze.assert_called_once()
-    assert engine.store.get("one").turn == 2
+    assert engine.store.get("one").turn == 1
     assert not engine.store.get("one").in_flight
 
 
 @pytest.mark.parametrize("async_client", [False, True])
 @respx.mock
 async def test_blank_messages_do_not_shift_occurrence_anchors_or_persisted_utterance(async_client: bool) -> None:
-    config = CaesuraConfig(api_key="test", mode="sync", auto_create_conversation=True)
+    config = CaesuraConfig(api_key="test", mode="sync")
     engine = AsyncCaesuraEngine(config) if async_client else CaesuraEngine(config)
     creation = respx.post("https://api.caesurao.com/api/conversation").respond(200, json={"id": "created"})
     analysis = respx.post("https://api.caesurao.com/api/analyze").respond(200, text="guidance")
@@ -559,25 +511,26 @@ async def test_blank_messages_do_not_shift_occurrence_anchors_or_persisted_utter
                 [
                     AnalyzeMessage(speaker_role="assistant", text="\n"),
                     AnalyzeMessage(speaker_role="assistant", text=" same ", speaker_index=42),
-                    AnalyzeMessage(speaker_role="user", text="\t"),
+                    AnalyzeMessage(speaker_role="user", text="next"),
                 ]
             )
         if isinstance(engine, AsyncCaesuraEngine):
             await engine.observe("one", history)
         else:
             engine.observe("one", history)
-    assert creation.call_count == 1
+    assert creation.call_count == 0
     assert engine.store.get("one").turn == 2
-    assert [m.text for m in history] == ["", " same ", "\n", " same ", "\t"]
+    assert [m.text for m in history] == ["", " same ", "\n", " same ", "next"]
     assert json.loads(analysis.calls.last.request.content) == {
         "messages": [
             {"speakerRole": "user", "speakerName": "Customer", "speakerIndex": 1, "text": " same "},
             {"speakerRole": "assistant", "speakerIndex": -1, "text": "guidance"},
             {"speakerRole": "user", "speakerName": "Agent", "speakerIndex": 42, "text": " same "},
+            {"speakerRole": "user", "speakerName": "Customer", "speakerIndex": 1, "text": "next"},
         ],
         "currentUser": "Agent",
         "persist": True,
         "calculateSimilarities": True,
-        "conversationId": "created",
-        "sessionId": "created",
+        "conversationId": "one",
+        "sessionId": "one",
     }

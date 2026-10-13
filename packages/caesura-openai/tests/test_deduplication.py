@@ -9,7 +9,8 @@ from typing import TYPE_CHECKING, Any
 import httpx
 import pytest
 import respx
-from caesura_openai import CaesuraOpenAIOptions, create_async_caesura, create_caesura
+from caesura_core import AnalysisContext, AnalyzeMessage, CustomerTurn
+from caesura_openai import AsyncCaesuraOpenAI, CaesuraOpenAIOptions, create_async_caesura, create_caesura
 from openai import AsyncOpenAI, OpenAI
 
 if TYPE_CHECKING:
@@ -44,6 +45,7 @@ async def test_duplicate_guidance_is_not_buffered_or_injected_again(asynchronous
     respx.post("http://openai.test/chat/completions").mock(side_effect=model)
     respx.post("http://openai.test/responses").mock(side_effect=model)
     options = CaesuraOpenAIOptions(
+        conversation_id="existing-id",
         api_key="caesura-test",
         base_url="http://caesura.test",
         mode="sync",
@@ -60,7 +62,7 @@ async def test_duplicate_guidance_is_not_buffered_or_injected_again(asynchronous
     )
     history: list[dict[str, str]] = []
     try:
-        for turn, role in enumerate(["user", "assistant", "user", "assistant"]):
+        for turn, role in enumerate(["user", "user", "user", "user"]):
             history.append({"role": role, "content": "text text text."})
             api = ("chat" if turn % 2 == 0 else "responses") if endpoint == "mixed" else endpoint
             kwargs = {
@@ -85,14 +87,15 @@ async def test_duplicate_guidance_is_not_buffered_or_injected_again(asynchronous
             assert history[-1] == {"role": role, "content": "text text text."}
             history = provider_body["messages" if api == "chat" else "input"]
     finally:
-        result = client.close()
-        if asynchronous:
-            await result
+        if isinstance(client, AsyncCaesuraOpenAI):
+            await client.close()
+        else:
+            client.close()
     assert not errors
     assert len(saved) == len(provider_bodies) == 4
     assert [row["speakerRole"] for row in saved] == ["user"] * 4
-    assert [row["speakerIndex"] for row in saved] == [1, 0, 1, 0]
-    assert [row["speakerName"] for row in saved] == ["Customer", "Agent", "Customer", "Agent"]
+    assert [row["speakerIndex"] for row in saved] == [1, 1, 1, 1]
+    assert [row["speakerName"] for row in saved] == ["Customer"] * 4
     assert [row["text"] for row in saved] == ["text text text."] * 4
     for turn, call in enumerate(analysis.calls):
         body = json.loads(call.request.content)
@@ -107,8 +110,8 @@ async def test_duplicate_guidance_is_not_buffered_or_injected_again(asynchronous
             expected.append(
                 {
                     "speakerRole": "user",
-                    "speakerName": "Customer" if index % 2 == 0 else "Agent",
-                    "speakerIndex": 1 - index % 2,
+                    "speakerName": "Customer",
+                    "speakerIndex": 1,
                     "text": "text text text.",
                 }
             )
@@ -139,6 +142,7 @@ async def test_background_deduplication_keeps_prior_guidance(endpoint: str) -> N
     path = "chat/completions" if endpoint == "chat" else "responses"
     provider = respx.post(f"http://openai.test/{path}").respond(200, json={"choices": [], "output": []})
     options = CaesuraOpenAIOptions(
+        conversation_id="existing-id",
         api_key="caesura-test",
         base_url="http://caesura.test",
         mode="async",
@@ -151,6 +155,7 @@ async def test_background_deduplication_keeps_prior_guidance(endpoint: str) -> N
         for turn in range(3):
             kwargs = {
                 "model": "mock",
+                "caesura_context": AnalysisContext(turn=CustomerTurn(str(turn), AnalyzeMessage("user", "hello"))),
                 "caesura_conversation_id": "existing-conversation",
                 "messages" if endpoint == "chat" else "input": [{"role": "user", "content": "hello"}],
             }

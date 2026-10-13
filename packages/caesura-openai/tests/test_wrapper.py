@@ -7,6 +7,7 @@ from typing import TYPE_CHECKING, Any
 import httpx
 import pytest
 import respx
+from caesura_core import DEFAULT_SKILL_PROMPT
 from caesura_openai import CaesuraOpenAIOptions, create_async_caesura, create_caesura
 from openai import AsyncOpenAI, OpenAI
 
@@ -19,7 +20,9 @@ class TestSyncWrapper:
     def test_transparent_delegation(self) -> None:
         """Tests that non-intercepted methods and properties fall through."""
         client = OpenAI(api_key="test-key")
-        caesura_client = create_caesura(client, CaesuraOpenAIOptions(base_url="http://test", api_key="c-key"))
+        caesura_client = create_caesura(
+            client, CaesuraOpenAIOptions(conversation_id="existing-id", base_url="http://test", api_key="c-key")
+        )
 
         assert caesura_client.models is not None
         assert caesura_client.chat.completions is not None
@@ -28,7 +31,9 @@ class TestSyncWrapper:
     def test_strips_caesura_conversation_id(self) -> None:
         """Tests that caesura_conversation_id is stripped before reaching OpenAI."""
         client = OpenAI(api_key="test-key", base_url="http://openai.test/")
-        caesura_client = create_caesura(client, CaesuraOpenAIOptions(base_url="http://caesura.test", api_key="c-key"))
+        caesura_client = create_caesura(
+            client, CaesuraOpenAIOptions(conversation_id="existing-id", base_url="http://caesura.test", api_key="c-key")
+        )
 
         oai_route = respx.post("http://openai.test/chat/completions").mock(
             return_value=httpx.Response(200, json={"choices": [{"message": {"content": "hi"}}]})
@@ -52,7 +57,10 @@ class TestSyncWrapper:
         """Crucial security test: CaesuraO API key must not go to OpenAI, and OpenAI key must not go to CaesuraO."""
         client = OpenAI(api_key="sk-openai-secret", base_url="http://openai.test/")
         caesura_client = create_caesura(
-            client, CaesuraOpenAIOptions(base_url="http://caesura.test", api_key="sk-caesura-secret", mode="sync")
+            client,
+            CaesuraOpenAIOptions(
+                conversation_id="existing-id", base_url="http://caesura.test", api_key="sk-caesura-secret", mode="sync"
+            ),
         )
 
         oai_route = respx.post("http://openai.test/chat/completions").mock(
@@ -83,7 +91,7 @@ class TestAsyncWrapper:
     async def test_strips_caesura_conversation_id(self) -> None:
         client = AsyncOpenAI(api_key="test-key", base_url="http://openai.test/")
         caesura_client = create_async_caesura(
-            client, CaesuraOpenAIOptions(base_url="http://caesura.test", api_key="c-key")
+            client, CaesuraOpenAIOptions(conversation_id="existing-id", base_url="http://caesura.test", api_key="c-key")
         )
 
         oai_route = respx.post("http://openai.test/chat/completions").mock(
@@ -124,7 +132,9 @@ async def test_default_endpoint_and_turn_ownership(
     from caesura_core import CadenceConfig
     from caesura_openai import AsyncCaesuraOpenAI, CaesuraOpenAI
 
-    options = CaesuraOpenAIOptions(api_key="c-key", mode="sync", cadence=CadenceConfig(every_turns=2))
+    options = CaesuraOpenAIOptions(
+        conversation_id="existing-id", api_key="c-key", mode="sync", cadence=CadenceConfig(every_turns=2)
+    )
     client: AsyncCaesuraOpenAI | CaesuraOpenAI
     if async_client:
         client = create_async_caesura(AsyncOpenAI(api_key="o-key", base_url="http://openai.test/"), options)
@@ -146,7 +156,8 @@ async def test_default_endpoint_and_turn_ownership(
         },
         {"role": "tool", "tool_call_id": "call_1", "content": "Available"},
     ]
-    for _ in range(3):
+    for turn in range(3):
+        messages.append({"role": "user", "content": f"Question {turn}"})
         if isinstance(client, AsyncCaesuraOpenAI):
             if endpoint == "chat":
                 await client.chat.completions.create(model="test", messages=messages, caesura_conversation_id="c1")
@@ -188,7 +199,9 @@ async def test_only_dialogue_is_sent_for_analysis(async_client: bool, endpoint: 
     from caesura_core import InjectConfig
     from caesura_openai import AsyncCaesuraOpenAI, CaesuraOpenAI
 
-    options = CaesuraOpenAIOptions(api_key="c-key", mode="sync", inject=InjectConfig(skill_prompt=""))
+    options = CaesuraOpenAIOptions(
+        conversation_id="existing-id", api_key="c-key", mode="sync", inject=InjectConfig(skill_prompt="")
+    )
     client: AsyncCaesuraOpenAI | CaesuraOpenAI
     if async_client:
         client = create_async_caesura(AsyncOpenAI(api_key="o-key", base_url="http://openai.test/"), options)
@@ -239,6 +252,7 @@ async def test_only_dialogue_is_sent_for_analysis(async_client: bool, endpoint: 
         items.insert(0, {"role": "system", "content": "Private system prompt"})
         items.insert(1, {"role": "developer", "content": "Private developer prompt"})
         items.append({"role": "assistant", "content": "Here is the answer"})
+        items.append({"role": "user", "content": "Next question"})
 
     kwargs = {"model": "test", "caesura_conversation_id": "c1", "messages" if endpoint == "chat" else "input": items}
     resource = client.chat.completions if endpoint == "chat" else client.responses
@@ -255,6 +269,7 @@ async def test_only_dialogue_is_sent_for_analysis(async_client: bool, endpoint: 
             {"speakerRole": "user", "speakerName": "Customer", "speakerIndex": 1, "text": "Hello"},
             {"speakerRole": "user", "speakerName": "Agent", "speakerIndex": 0, "text": "Let me check"},
             {"speakerRole": "user", "speakerName": "Agent", "speakerIndex": 0, "text": "Here is the answer"},
+            {"speakerRole": "user", "speakerName": "Customer", "speakerIndex": 1, "text": "Next question"},
         ]
     # Filtering the analysis transcript must preserve the tool exchange sent to OpenAI.
     body = json.loads(oai_route.calls.last.request.content)
@@ -275,6 +290,7 @@ async def test_send_config_and_zero_keep_last_preserve_openai_input(async_client
     from caesura_openai import AsyncCaesuraOpenAI, CaesuraOpenAI
 
     options = CaesuraOpenAIOptions(
+        conversation_id="existing-id",
         api_key="c-key",
         mode="sync",
         send=SendConfig(max_messages=1, max_input_chars=5),
@@ -293,7 +309,7 @@ async def test_send_config_and_zero_keep_last_preserve_openai_input(async_client
     openai_route = respx.post(f"http://openai.test/{path}").mock(
         return_value=httpx.Response(200, json={"choices": [], "output": []})
     )
-    messages = [{"role": "user", "content": "Hello"}, {"role": "assistant", "content": "abcdefghij"}]
+    messages = [{"role": "assistant", "content": "Hello"}, {"role": "user", "content": "abcdefghij"}]
     resource = client.chat.completions if endpoint == "chat" else client.responses
     kwargs = {"model": "test", "caesura_conversation_id": "c1", "messages" if endpoint == "chat" else "input": messages}
     if isinstance(client, AsyncCaesuraOpenAI):
@@ -302,13 +318,13 @@ async def test_send_config_and_zero_keep_last_preserve_openai_input(async_client
         resource.create(**kwargs)
     body = json.loads(analysis_route.calls.last.request.content)
     assert body["currentUser"] == "Support"
-    assert body["messages"] == [{"speakerRole": "user", "speakerName": "Support", "speakerIndex": 0, "text": "fghij"}]
+    assert body["messages"] == [{"speakerRole": "user", "speakerName": "Visitor", "speakerIndex": 1, "text": "fghij"}]
     sent = json.loads(openai_route.calls.last.request.content)
     assert sent["messages" if endpoint == "chat" else "input"] == messages
     assert "instructions" not in sent
     recs = client._engine.store.get("c1").recommendations
     assert len(recs) == 1
-    assert recs[0].after_message_hash == hash_message("Support", "abcdefghij")
+    assert recs[0].after_message_hash == hash_message("Visitor", "abcdefghij")
     if isinstance(client, AsyncCaesuraOpenAI):
         await client.close()
     else:
@@ -318,7 +334,7 @@ async def test_send_config_and_zero_keep_last_preserve_openai_input(async_client
 @pytest.mark.parametrize("async_client", [False, True])
 @respx.mock
 async def test_context_manager_keeps_wrapper_and_closes_provider(async_client: bool) -> None:
-    options = CaesuraOpenAIOptions(api_key="c-key", mode="sync")
+    options = CaesuraOpenAIOptions(conversation_id="existing-id", api_key="c-key", mode="sync")
     route = respx.post("https://api.caesurao.com/api/analyze").mock(return_value=httpx.Response(200, text="Guidance"))
     respx.post("https://api.openai.com/v1/responses").mock(return_value=httpx.Response(200, json={"output": []}))
     if async_client:
@@ -355,6 +371,7 @@ async def test_callback_failures_do_not_break_model_requests(async_client: bool,
 
     events: list[CaesuraEvent] = []
     options = CaesuraOpenAIOptions(
+        conversation_id="existing-id",
         api_key="fake",
         mode="sync",
         on_error=fail,
@@ -393,7 +410,7 @@ async def test_callback_failures_do_not_break_model_requests(async_client: bool,
     body = json.loads(route.calls.last.request.content)
     if failure != "request":
         if endpoint == "responses":
-            assert body["instructions"].startswith("During the conversation")
+            assert body["instructions"] == DEFAULT_SKILL_PROMPT
             assert "None" not in body["instructions"]
         else:
             messages = body["messages"]
@@ -406,14 +423,13 @@ async def test_callback_failures_do_not_break_model_requests(async_client: bool,
 
 
 @pytest.mark.parametrize("asynchronous", [False, True])
-@pytest.mark.parametrize("automatic", [False, True])
 @pytest.mark.parametrize("api", ["chat", "responses"])
 @respx.mock
-async def test_conversation_creation_and_id_reuse(asynchronous: bool, automatic: bool, api: str) -> None:
+async def test_conversation_creation_and_id_reuse(asynchronous: bool, api: str) -> None:
     import json
 
     options = CaesuraOpenAIOptions(
-        api_key="caesura-key", base_url="http://caesura.test", mode="sync", auto_create_conversation=automatic
+        conversation_id="existing-id", api_key="caesura-key", base_url="http://caesura.test", mode="sync"
     )
     creation = respx.post("http://caesura.test/api/conversation").respond(200, json={"id": "backend-id"})
     analysis = respx.post("http://caesura.test/api/analyze").respond(200, json={})
@@ -426,7 +442,7 @@ async def test_conversation_creation_and_id_reuse(asynchronous: bool, automatic:
         async with create_async_caesura(
             AsyncOpenAI(api_key="openai-key", base_url="http://openai.test/"), options
         ) as client:
-            conversation_id = "local-label" if automatic else await client.create_conversation(name="Example")
+            conversation_id = await client.create_conversation(name="Example")
             for _ in range(2):
                 args["caesura_conversation_id"] = conversation_id
                 if api == "chat":
@@ -435,7 +451,7 @@ async def test_conversation_creation_and_id_reuse(asynchronous: bool, automatic:
                     await client.responses.create(**args)
     else:
         with create_caesura(OpenAI(api_key="openai-key", base_url="http://openai.test/"), options) as sync_client:
-            conversation_id = "local-label" if automatic else sync_client.create_conversation(name="Example")
+            conversation_id = sync_client.create_conversation(name="Example")
             for _ in range(2):
                 args["caesura_conversation_id"] = conversation_id
                 if api == "chat":
@@ -444,8 +460,9 @@ async def test_conversation_creation_and_id_reuse(asynchronous: bool, automatic:
                     sync_client.responses.create(**args)
     assert creation.call_count == 1
     assert creation.calls.last.request.headers["authorization"] == "Bearer caesura-key"
-    assert json.loads(creation.calls.last.request.content) == ({} if automatic else {"name": "Example"})
-    assert analysis.call_count == model.call_count == 2
+    assert json.loads(creation.calls.last.request.content) == {"name": "Example"}
+    assert analysis.call_count == (1 if api == "chat" else 2)
+    assert model.call_count == 2
     for call in analysis.calls:
         assert json.loads(call.request.content)["sessionId"] == "backend-id"
     for call in model.calls:
@@ -455,29 +472,22 @@ async def test_conversation_creation_and_id_reuse(asynchronous: bool, automatic:
 
 @pytest.mark.parametrize("asynchronous", [False, True])
 @respx.mock
-async def test_creation_failure_does_not_break_model_call(asynchronous: bool) -> None:
-    errors: list[Exception] = []
-    options = CaesuraOpenAIOptions(
-        api_key="key",
-        base_url="http://caesura.test",
-        mode="sync",
-        auto_create_conversation=True,
-        on_error=errors.append,
-        conversation_id="local-label",
-    )
+async def test_creation_failure_is_explicit(asynchronous: bool) -> None:
+    from caesura_core import TransportError
+
+    options = CaesuraOpenAIOptions(api_key="key", base_url="http://caesura.test", mode="sync")
     creation = respx.post("http://caesura.test/api/conversation").respond(403, json={"error": "Forbidden"})
     model = respx.post("http://openai.test/responses").respond(200, json={"id": "response", "output": []})
-    if asynchronous:
-        async with create_async_caesura(
-            AsyncOpenAI(api_key="openai-key", base_url="http://openai.test/"), options
-        ) as client:
-            result = await client.responses.create(model="test-model", input="hello")
-    else:
-        with create_caesura(OpenAI(api_key="openai-key", base_url="http://openai.test/"), options) as sync_client:
-            result = sync_client.responses.create(model="test-model", input="hello")
-    assert result.id == "response"
-    assert creation.call_count == model.call_count == 1
-    assert len(errors) == 1
+    cls = AsyncOpenAI if asynchronous else OpenAI
+    factory = create_async_caesura if asynchronous else create_caesura
+    client: Any = factory(cls(api_key="test"), options)
+    with pytest.raises(TransportError):
+        if asynchronous:
+            await client.create_conversation()
+        else:
+            client.create_conversation()
+    assert creation.call_count == 1
+    assert model.call_count == 0
 
 
 @pytest.mark.parametrize("asynchronous", [False, True])
@@ -492,7 +502,9 @@ async def test_identical_prompt_across_apis_preserves_dialogue_origin(asynchrono
     analysis = respx.post("http://caesura.test/api/analyze").respond(200, json=prior)
     respx.post("http://openai.test/responses").respond(200, json={"id": "response", "output": []})
     respx.post("http://openai.test/chat/completions").respond(200, json={"choices": []})
-    options = CaesuraOpenAIOptions(api_key="test-key", base_url="http://caesura.test", mode="sync", persist=True)
+    options = CaesuraOpenAIOptions(
+        conversation_id="existing-id", api_key="test-key", base_url="http://caesura.test", mode="sync", persist=True
+    )
     second_api = "chat" if first_api == "responses" else "responses"
     if asynchronous:
         async with create_async_caesura(

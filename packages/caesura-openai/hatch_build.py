@@ -1,8 +1,8 @@
 """Hatchling metadata hook: provides dependencies with a pinned caesura-io-core version.
 
 Both packages are released in lockstep, so the published wheel for
-caesura-io-openai should always require the matching major.minor.patch
-of caesura-io-core.  During local development uv resolves from the
+caesura-io-openai requires at least its own version of caesura-io-core,
+within the same major. During local development uv resolves from the
 workspace, so this constraint only matters for published wheels.
 """
 
@@ -20,8 +20,9 @@ class PinCoreDependencyHook(MetadataHookInterface):
         import re
         from pathlib import Path
 
-        # Read the actual version from caesura-core pyproject.toml
-        core_pyproject = Path(__file__).parent.parent / "caesura-core" / "pyproject.toml"
+        # Use this distribution's release-managed version. A standalone sdist
+        # has no sibling workspace package to read.
+        core_pyproject = Path(__file__).parent / "pyproject.toml"
         content = core_pyproject.read_text("utf-8")
         match = re.search(r'^version\s*=\s*"([^"]+)"', content, re.MULTILINE)
         if not match:

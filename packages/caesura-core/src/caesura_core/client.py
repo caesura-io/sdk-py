@@ -8,10 +8,14 @@ from __future__ import annotations
 
 import json
 import math
-from typing import cast
+import time
+from typing import TYPE_CHECKING, cast
 
 import httpx
 
+if TYPE_CHECKING:
+    from caesura_core.runtime import AnalysisContext
+from caesura_core.identity import sdk_identity
 from caesura_core.types import AnalyzeRequestBody, AnalyzeResult, CaesuraAnalysis
 
 
@@ -19,37 +23,56 @@ class CaesuraClient:
     """Synchronous HTTP client for the CaesuraO backend."""
 
     def __init__(self, base_url: str, api_key: str, timeout_ms: int) -> None:
+        if not api_key:
+            raise ValueError("CaesuraO HTTP transport requires an API key")
         self._base_url = base_url.rstrip("/")
         self._api_key = api_key
         self._timeout = timeout_ms / 1000.0  # httpx uses seconds
 
     def create_conversation(
-        self, *, name: str | None = None, calendar_id: str | None = None, event_id: str | None = None
+        self,
+        *,
+        name: str | None = None,
+        calendar_id: str | None = None,
+        event_id: str | None = None,
+        context: AnalysisContext | None = None,
     ) -> str:
         """Create a backend conversation and return its ID. Failures propagate to the caller."""
-        with httpx.Client(timeout=self._timeout) as client:
+        timeout = _timeout(self._timeout, context)
+        with httpx.Client(timeout=timeout) as client:
             response = client.post(
                 f"{self._base_url}/api/conversation",
                 json=_conversation_body(name, calendar_id, event_id),
-                headers={"authorization": f"Bearer {self._api_key}"},
+                headers={"authorization": f"Bearer {self._api_key}", **_identity_headers(context)},
             )
-        return _parse_conversation_id(response)
+        cid = _parse_conversation_id(response)
+        if context is not None:
+            context.conversation_id = cid
+            context.check()
+        return cid
 
     def analyze(
         self,
         body: AnalyzeRequestBody,
         *,
         include_credit_usage: bool = False,
+        context: AnalysisContext | None = None,
     ) -> AnalyzeResult:
         """Call the analyze endpoint.  Returns the analysis and optional credit usage."""
+        if context is not None:
+            context.check()
+        timeout = self._timeout
+        if context is not None and context.deadline is not None:
+            timeout = min(timeout, max(0.001, context.deadline - time.monotonic()))
         headers: dict[str, str] = {
             "content-type": "application/json",
             "authorization": f"Bearer {self._api_key}",
         }
+        headers.update(_identity_headers(context))
         if include_credit_usage:
             headers["x-include-credit-usage"] = "true"
 
-        with httpx.Client(timeout=self._timeout) as client:
+        with httpx.Client(timeout=timeout) as client:
             response = client.post(
                 f"{self._base_url}/api/analyze",
                 json=body.to_dict(),
@@ -67,37 +90,56 @@ class AsyncCaesuraClient:
     """Asynchronous HTTP client for the CaesuraO backend."""
 
     def __init__(self, base_url: str, api_key: str, timeout_ms: int) -> None:
+        if not api_key:
+            raise ValueError("CaesuraO HTTP transport requires an API key")
         self._base_url = base_url.rstrip("/")
         self._api_key = api_key
         self._timeout = timeout_ms / 1000.0
 
     async def create_conversation(
-        self, *, name: str | None = None, calendar_id: str | None = None, event_id: str | None = None
+        self,
+        *,
+        name: str | None = None,
+        calendar_id: str | None = None,
+        event_id: str | None = None,
+        context: AnalysisContext | None = None,
     ) -> str:
         """Create a backend conversation and return its ID. Failures propagate to the caller."""
-        async with httpx.AsyncClient(timeout=self._timeout) as client:
+        timeout = _timeout(self._timeout, context)
+        async with httpx.AsyncClient(timeout=timeout) as client:
             response = await client.post(
                 f"{self._base_url}/api/conversation",
                 json=_conversation_body(name, calendar_id, event_id),
-                headers={"authorization": f"Bearer {self._api_key}"},
+                headers={"authorization": f"Bearer {self._api_key}", **_identity_headers(context)},
             )
-        return _parse_conversation_id(response)
+        cid = _parse_conversation_id(response)
+        if context is not None:
+            context.conversation_id = cid
+            context.check()
+        return cid
 
     async def analyze(
         self,
         body: AnalyzeRequestBody,
         *,
         include_credit_usage: bool = False,
+        context: AnalysisContext | None = None,
     ) -> AnalyzeResult:
         """Call the analyze endpoint asynchronously."""
+        if context is not None:
+            context.check()
+        timeout = self._timeout
+        if context is not None and context.deadline is not None:
+            timeout = min(timeout, max(0.001, context.deadline - time.monotonic()))
         headers: dict[str, str] = {
             "content-type": "application/json",
             "authorization": f"Bearer {self._api_key}",
         }
+        headers.update(_identity_headers(context))
         if include_credit_usage:
             headers["x-include-credit-usage"] = "true"
 
-        async with httpx.AsyncClient(timeout=self._timeout) as client:
+        async with httpx.AsyncClient(timeout=timeout) as client:
             response = await client.post(
                 f"{self._base_url}/api/analyze",
                 json=body.to_dict(),
@@ -153,6 +195,14 @@ def _parse_result(response: httpx.Response) -> AnalyzeResult:
         analysis=analysis,
         credit_usage=_parse_credit_usage(response.headers.get("x-credit-usage")),
         is_same=is_same,
+        request_metadata={
+            "status_code": response.status_code,
+            "headers": {
+                k: v
+                for k, v in response.headers.items()
+                if k.lower() not in ("set-cookie", "authorization", "proxy-authorization")
+            },
+        },
     )
 
 
@@ -167,3 +217,19 @@ def _parse_credit_usage(raw: str | None) -> float | None:
         return None
     except (ValueError, TypeError):
         return None
+
+
+def _identity_headers(context: AnalysisContext | None) -> dict[str, str]:
+    identity = (
+        context.sdk_identity if context is not None and context.sdk_identity is not None else sdk_identity("http")
+    )
+    return identity.http_headers()
+
+
+def _timeout(default: float, context: AnalysisContext | None) -> float:
+    if context is None:
+        return default
+    context.check()
+    if context.deadline is None:
+        return default
+    return min(default, max(0.001, context.deadline - time.monotonic()))

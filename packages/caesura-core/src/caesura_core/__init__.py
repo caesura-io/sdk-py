@@ -28,14 +28,46 @@ from caesura_core.helpers import (
     select_active,
     stringify_value,
 )
+from caesura_core.identity import SdkIdentity, sdk_identity
 from caesura_core.logger import DebugLoggerOptions, create_debug_logger
 from caesura_core.meter import CreditMeter, CreditMeterOptions, CreditMeterSnapshot, create_credit_meter
+from caesura_core.runtime import (
+    AnalysisCancelled,
+    AnalysisCompletion,
+    AnalysisContext,
+    AnalysisTimeout,
+    AnalysisTransport,
+    AsyncAnalysisTransport,
+    AsyncConversationTransport,
+    AsyncRequestAudit,
+    CaesuraError,
+    CancellationToken,
+    ConversationOptions,
+    ConversationTransport,
+    Correlation,
+    CreationCompletion,
+    CustomerTurn,
+    FailurePolicy,
+    PreviousAnalysisError,
+    ProviderOutcome,
+    ProviderRequest,
+    RequestAudit,
+    StoreError,
+    TranscriptCompletion,
+    TranscriptMessage,
+    TranscriptRecord,
+    TransportError,
+    UnsupportedCapability,
+)
 from caesura_core.store import (
+    AsyncCaesuraStore,
     CaesuraStore,
     ConversationState,
     MemoryCaesuraStore,
     MemoryStoreOptions,
     StoredRecommendation,
+    state_from_dict,
+    state_to_dict,
 )
 
 # Types
@@ -49,6 +81,7 @@ from caesura_core.types import (
     CaesuraConfig,
     CaesuraEvent,
     CaesuraMode,
+    ConversationCreatedEvent,
     CreditUsageInfo,
     DedupedEvent,
     ErrorEvent,
@@ -129,5 +162,45 @@ __all__ = [
     "render_block",
     "resolve_config",
     "select_active",
+    "state_from_dict",
+    "state_to_dict",
     "stringify_value",
+]
+
+
+__all__ += [
+    "AnalysisCancelled",
+    "AnalysisCompletion",
+    "AnalysisContext",
+    "AnalysisTimeout",
+    "AnalysisTransport",
+    "AsyncAnalysisTransport",
+    "AsyncCaesuraStore",
+    "AsyncConversationTransport",
+    "AsyncRequestAudit",
+    "CaesuraError",
+    "CancellationToken",
+    "ConversationTransport",
+    "Correlation",
+    "CustomerTurn",
+    "FailurePolicy",
+    "PreviousAnalysisError",
+    "ProviderOutcome",
+    "ProviderRequest",
+    "RequestAudit",
+    "StoreError",
+    "TransportError",
+    "UnsupportedCapability",
+]
+
+
+__all__ += [
+    "ConversationCreatedEvent",
+    "ConversationOptions",
+    "CreationCompletion",
+    "SdkIdentity",
+    "TranscriptCompletion",
+    "TranscriptMessage",
+    "TranscriptRecord",
+    "sdk_identity",
 ]

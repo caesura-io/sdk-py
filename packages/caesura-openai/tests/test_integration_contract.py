@@ -10,7 +10,16 @@ from unittest.mock import patch
 import httpx
 import pytest
 import respx
-from caesura_core import InjectConfig, SendConfig, SpeakerNames, StoredRecommendation, TtlSeconds
+from caesura_core import (
+    AnalysisContext,
+    AnalyzeMessage,
+    CustomerTurn,
+    InjectConfig,
+    SendConfig,
+    SpeakerNames,
+    StoredRecommendation,
+    TtlSeconds,
+)
 from caesura_openai import CaesuraOpenAIOptions, create_async_caesura, create_caesura
 from openai import AsyncOpenAI, OpenAI
 
@@ -20,6 +29,7 @@ if TYPE_CHECKING:
 
 
 def wrap(asynchronous: bool, **options: Any) -> Any:
+    options.setdefault("conversation_id", "existing-id")
     config = CaesuraOpenAIOptions(api_key="test", mode="sync", **options)
     cls = AsyncOpenAI if asynchronous else OpenAI
     factory = create_async_caesura if asynchronous else create_caesura
@@ -85,7 +95,7 @@ async def test_responses_exact_order_reused_input_and_instructions(
     dialogue: list[dict[str, Any]] = []
     instructions = "Existing instructions"
     try:
-        for turn, role in enumerate(["user", "assistant", "user", "assistant"], 1):
+        for turn, role in enumerate(["user", "user", "user", "user"], 1):
             message = {"role": role, "content": "identical text"}
             dialogue.append(message)
             history.append(message)
@@ -151,13 +161,26 @@ async def test_explicit_indices_survive_collection_and_send_limits(
     backend = respx.post("https://api.caesurao.com/api/analyze").respond(200, json={"isSame": True})
     path = "chat/completions" if endpoint == "chat" else "responses"
     provider = respx.post(f"http://openai.test/{path}").mock(side_effect=provider_response)
-    messages = [{"role": "user", "content": "hello"}, {"role": "assistant", "speakerIndex": index, "content": "answer"}]
+    messages = [{"role": "assistant", "content": "hello"}, {"role": "user", "speakerIndex": index, "content": "answer"}]
     try:
-        await call(client, asynchronous, endpoint, messages, caesura_conversation_id="one")
+        await call(
+            client,
+            asynchronous,
+            endpoint,
+            messages,
+            caesura_conversation_id="one",
+            caesura_context=AnalysisContext(
+                turn=CustomerTurn(
+                    "explicit",
+                    AnalyzeMessage("user", "answer", speaker_index=index),
+                    [AnalyzeMessage("assistant", "hello")],
+                )
+            ),
+        )
         body = json.loads(backend.calls.last.request.content)
-        expected = [wire_dialogue("assistant", "wer" if limited else "answer", index)]
+        expected = [wire_dialogue("user", "wer" if limited else "answer", index)]
         if not limited:
-            expected.insert(0, wire_dialogue("user", "hello"))
+            expected.insert(0, wire_dialogue("assistant", "hello"))
         assert body["messages"] == expected
         assert body["currentUser"] == "Support"
         assert (
@@ -219,26 +242,15 @@ async def test_guidance_expires_during_foreground_analysis(asynchronous: bool, e
 @pytest.mark.parametrize("endpoint", ["chat", "responses"])
 @pytest.mark.parametrize("stream", [False, True])
 @respx.mock
-async def test_no_id_analyzes_in_default_session(asynchronous: bool, endpoint: str, stream: bool) -> None:
-    client = wrap(asynchronous, inject=InjectConfig(skill_prompt="", template="{analysis}"))
+async def test_no_id_rejected_before_paid_work(asynchronous: bool, endpoint: str, stream: bool) -> None:
+    client = wrap(asynchronous, conversation_id=None)
     backend = respx.post("https://api.caesurao.com/api/analyze").respond(200, text="guide")
-    create = respx.post("https://api.caesurao.com/api/conversation").respond(200, json={"id": "created"})
     path = "chat/completions" if endpoint == "chat" else "responses"
     provider = respx.post(f"http://openai.test/{path}").mock(side_effect=provider_response)
-    key = "messages" if endpoint == "chat" else "input"
-    history = [{"role": "user", "content": "hello"}]
     try:
-        await call(client, asynchronous, endpoint, history, stream=stream)
-        assert json.loads(provider.calls.last.request.content) == {
-            "model": "test",
-            key: [*history, {"role": "user", "content": "guide"}],
-            "stream": stream,
-        }
-        body = json.loads(backend.calls.last.request.content)
-        assert body["sessionId"] == body["conversationId"] == "default"
-        assert body["persist"] is True
-        assert create.call_count == 0
-        assert client._engine.store.get("default").turn == 1
+        with pytest.raises(ValueError, match="conversation_id is required"):
+            await call(client, asynchronous, endpoint, [{"role": "user", "content": "hello"}], stream=stream)
+        assert not backend.called and not provider.called
     finally:
         await close(client, asynchronous)
 
@@ -280,24 +292,35 @@ async def test_reused_guidance_excludes_tools_and_keeps_real_assistant_text(asyn
             {"type": "function_call", "call_id": "call", "name": "lookup", "arguments": "{}"},
             {"type": "function_call_output", "call_id": "call", "output": "tool result"},
         ]
+    original.append({"role": "user", "content": "hello"})
     try:
         await call(client, asynchronous, endpoint, original, stream=True, caesura_conversation_id="one")
         sent = json.loads(provider.calls.last.request.content)[key]
         assert sent == [*original, {"role": "user", "content": "guidance"}]
         # Real assistant speech can equal injected user-role guidance and must survive.
         real_reply = {"role": "assistant", "content": "guidance"}
-        await call(client, asynchronous, endpoint, [*sent, real_reply], stream=True, caesura_conversation_id="one")
+        await call(
+            client,
+            asynchronous,
+            endpoint,
+            [*sent, real_reply, {"role": "user", "content": "next"}],
+            stream=True,
+            caesura_conversation_id="one",
+        )
         body = json.loads(backend.calls.last.request.content)
         assert body["messages"] == [
             wire_dialogue("assistant", "checking", 42),
+            wire_dialogue("user", "hello"),
             {"speakerRole": "assistant", "speakerIndex": -1, "text": "guidance"},
             wire_dialogue("assistant", "guidance"),
+            wire_dialogue("user", "next"),
         ]
         assert body["currentUser"] == "Support"
         assert json.loads(provider.calls.last.request.content)[key] == [
             *original,
             {"role": "user", "content": "guidance"},
             real_reply,
+            {"role": "user", "content": "next"},
         ]
         assert len(client._engine.store.get("one").recommendations) == 1
     finally:
@@ -323,24 +346,24 @@ async def test_cadence_gaps_preserve_order_in_reused_history(asynchronous: bool,
     key = "messages" if endpoint == "chat" else "input"
     history = []
     try:
-        for turn in range(1, 5):
-            history.append({"role": "user" if turn % 2 else "assistant", "content": "same"})
+        for _turn in range(1, 5):
+            history.append({"role": "user", "content": "same"})
             await call(client, asynchronous, endpoint, history, caesura_conversation_id="one")
             history = json.loads(provider.calls.last.request.content)[key]
         assert backend.call_count == 2
         assert history == [
             {"role": "user", "content": "same"},
             {"role": "assistant", "content": "first"},
-            {"role": "assistant", "content": "same"},
+            {"role": "user", "content": "same"},
             {"role": "user", "content": "same"},
             {"role": "assistant", "content": "third"},
-            {"role": "assistant", "content": "same"},
+            {"role": "user", "content": "same"},
         ]
         body = json.loads(backend.calls.last.request.content)
         assert body["messages"] == [
             {"speakerRole": "user", "speakerName": "Customer", "speakerIndex": 1, "text": "same"},
             {"speakerRole": "assistant", "speakerIndex": -1, "text": "first"},
-            {"speakerRole": "user", "speakerName": "Agent", "speakerIndex": 0, "text": "same"},
+            {"speakerRole": "user", "speakerName": "Customer", "speakerIndex": 1, "text": "same"},
             {"speakerRole": "user", "speakerName": "Customer", "speakerIndex": 1, "text": "same"},
         ]
     finally:
@@ -363,9 +386,27 @@ async def test_old_merged_guidance_is_recognized_after_keep_last_changes(endpoin
     key = "messages" if endpoint == "chat" else "input"
     original = [{"role": "user", "content": "hello"}]
     try:
-        await call(client, True, endpoint, original, caesura_conversation_id="one")
+        await call(
+            client,
+            True,
+            endpoint,
+            original,
+            caesura_conversation_id="one",
+            caesura_context=AnalysisContext(
+                turn=CustomerTurn(str(backend.call_count), AnalyzeMessage("user", "hello"))
+            ),
+        )
         first = json.loads(provider.calls.last.request.content)[key][-1]
-        await call(client, True, endpoint, original, caesura_conversation_id="one")
+        await call(
+            client,
+            True,
+            endpoint,
+            original,
+            caesura_conversation_id="one",
+            caesura_context=AnalysisContext(
+                turn=CustomerTurn(str(backend.call_count), AnalyzeMessage("user", "hello"))
+            ),
+        )
         merged = json.loads(provider.calls.last.request.content)[key][-1]
         assert merged == {"role": "user", "content": "first\n\nsecond"}
         client._engine.config.inject.keep_last = 1
@@ -396,12 +437,9 @@ async def test_old_merged_guidance_is_recognized_after_keep_last_changes(endpoin
 @pytest.mark.parametrize(
     "configured,per_call,expected",
     [
-        (None, None, "default"),
         ("configured", None, "configured"),
         ("configured", "override", "override"),
         (None, "override", "override"),
-        ("configured", "", ""),
-        ("", None, ""),
     ],
 )
 @respx.mock
@@ -426,15 +464,12 @@ async def test_session_resolution_treats_only_none_as_omitted(
 
 @pytest.mark.parametrize("asynchronous", [False, True])
 @pytest.mark.parametrize("stream", [False, True])
-@pytest.mark.parametrize("persist,automatic", [(True, True), (True, False), (False, True), (False, False)])
+@pytest.mark.parametrize("persist", [True, False])
 @respx.mock
-async def test_default_session_reused_across_apis_and_creation_policy(
-    asynchronous: bool, stream: bool, persist: bool, automatic: bool
-) -> None:
+async def test_existing_identity_reused_across_apis(asynchronous: bool, stream: bool, persist: bool) -> None:
     client = wrap(
         asynchronous,
         persist=persist,
-        auto_create_conversation=automatic,
         inject=InjectConfig(skill_prompt="", template="{analysis}"),
     )
     create = respx.post("https://api.caesurao.com/api/conversation").respond(200, json={"id": "backend-created"})
@@ -447,19 +482,19 @@ async def test_default_session_reused_across_apis_and_creation_policy(
     agent = {"role": "assistant", "content": "same"}
     try:
         await call(client, asynchronous, "chat", [customer], stream=stream)
-        await call(client, asynchronous, "responses", [customer, agent], stream=stream, caesura_conversation_id=None)
-        assert create.call_count == int(persist and automatic)
+        await call(
+            client, asynchronous, "responses", [customer, agent, customer], stream=stream, caesura_conversation_id=None
+        )
+        assert create.call_count == 0
         bodies = [json.loads(c.request.content) for c in backend.calls]
         for body in bodies:
             assert body["persist"] is persist
-            if persist:
-                assert body["sessionId"] == body["conversationId"] == ("backend-created" if automatic else "default")
-            else:
-                assert "sessionId" not in body and "conversationId" not in body
+            assert body["sessionId"] == body["conversationId"] == "existing-id"
         assert bodies[-1]["messages"] == [
             {"speakerRole": "user", "speakerName": "Customer", "speakerIndex": 1, "text": "same"},
             {"speakerRole": "assistant", "speakerIndex": -1, "text": "first"},
             {"speakerRole": "user", "speakerName": "Agent", "speakerIndex": 0, "text": "same"},
+            {"speakerRole": "user", "speakerName": "Customer", "speakerIndex": 1, "text": "same"},
         ]
         assert bodies[-1]["currentUser"] == "Agent"
         assert not ({"kind", "callType", "notifyIntegrations"} & bodies[-1].keys())
@@ -471,9 +506,10 @@ async def test_default_session_reused_across_apis_and_creation_policy(
             customer,
             {"role": "user", "content": "first"},
             agent,
+            customer,
         ]
-        assert client._engine.store.get("default").turn == 2
-        assert len(client._engine.store.get("default").recommendations) == 1
+        assert client._engine.store.get("existing-id").turn == 2
+        assert len(client._engine.store.get("existing-id").recommendations) == 1
     finally:
         await close(client, asynchronous)
 
@@ -495,17 +531,19 @@ async def test_reused_guidance_keeps_actual_emitted_role_after_role_change(async
         await call(client, asynchronous, endpoint, [customer])
         previous = json.loads(provider.calls.last.request.content)[key]
         client._engine.config.inject.as_role = "assistant"
-        await call(client, asynchronous, endpoint, [*previous, real_reply])
+        await call(client, asynchronous, endpoint, [*previous, real_reply, customer])
         body = json.loads(backend.calls.last.request.content)
         assert body["messages"] == [
             {"speakerRole": "user", "speakerName": "Customer", "speakerIndex": 1, "text": "hello"},
             {"speakerRole": "assistant", "speakerIndex": -1, "text": "guide"},
             {"speakerRole": "user", "speakerName": "Agent", "speakerIndex": 0, "text": "guide"},
+            {"speakerRole": "user", "speakerName": "Customer", "speakerIndex": 1, "text": "hello"},
         ]
         assert json.loads(provider.calls.last.request.content)[key] == [
             customer,
             {"role": "assistant", "content": "guide"},
             real_reply,
+            customer,
         ]
     finally:
         await close(client, asynchronous)
@@ -549,7 +587,7 @@ async def test_empty_template_disables_injection_but_retains_analysis_context(
     history = [{"role": "user", "content": "question"}]
     try:
         await call(client, asynchronous, endpoint, history, caesura_conversation_id="one")
-        history.append({"role": "assistant", "content": "answer"})
+        history.extend([{"role": "assistant", "content": "answer"}, {"role": "user", "content": "next"}])
         await call(client, asynchronous, endpoint, history, caesura_conversation_id="one")
         assert client._engine.config.inject.template == ""
         assert json.loads(provider.calls.last.request.content) == {"model": "test", key: history}
@@ -558,6 +596,7 @@ async def test_empty_template_disables_injection_but_retains_analysis_context(
                 {"speakerRole": "user", "speakerName": "Customer", "speakerIndex": 1, "text": "question"},
                 {"speakerRole": "assistant", "speakerIndex": -1, "text": "retained guidance"},
                 {"speakerRole": "user", "speakerName": "Agent", "speakerIndex": 0, "text": "answer"},
+                {"speakerRole": "user", "speakerName": "Customer", "speakerIndex": 1, "text": "next"},
             ],
             "conversationId": "one",
             "sessionId": "one",
@@ -578,9 +617,9 @@ async def test_background_scheduling_failure_does_not_break_model_call(asynchron
 
     errors: list[Exception] = []
     config = CaesuraOpenAIOptions(
+        conversation_id="existing-id",
         api_key="test",
         mode="async",
-        auto_create_conversation=True,
         on_error=errors.append,
         inject=InjectConfig(skill_prompt=""),
     )
@@ -595,7 +634,7 @@ async def test_background_scheduling_failure_does_not_break_model_call(asynchron
     original_task, original_thread = asyncio.create_task, threading.Thread
 
     def schedule_task(coroutine: Any, **kwargs: Any) -> Any:
-        if coroutine.cr_code.co_name == "_do_observe":
+        if coroutine.cr_code.co_name == "_run":
             raise error
         return original_task(coroutine, **kwargs)
 
@@ -614,7 +653,7 @@ async def test_background_scheduling_failure_does_not_break_model_call(asynchron
                 if asynchronous:
                     for scheduled in scheduler.call_args_list:
                         coroutine = scheduled.args[0]
-                        if coroutine.cr_code.co_name == "_do_observe":
+                        if coroutine.cr_code.co_name == "_run":
                             assert coroutine.cr_frame is None  # Closed, without an unawaited-coroutine warning.
         assert errors == [error]
         assert not client._engine.store.get("one").in_flight

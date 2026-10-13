@@ -1,6 +1,6 @@
 [project]
 name = "caesura-io-openai"
-version = "3.0.0"
+version = "4.0.0"
 dynamic = ["dependencies"]
 description = "Transparent wrapper for the OpenAI Python SDK to inject CaesuraO recommendations."
 readme = "README.md"

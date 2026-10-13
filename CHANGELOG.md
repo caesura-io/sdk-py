@@ -1,6 +1,36 @@
 # CHANGELOG
 
 
+## v4.0.0 (2026-10-13)
+
+### Features
+
+- Persist complete conversation transcripts
+  ([`044bcb6`](https://github.com/caesura-io/sdk-py/commit/044bcb6ec265bcce3e799bb732455e644eddf3a0))
+
+Save customer messages, completed agent replies, and explicit greetings. Reuse stored message
+  identities on retry; preserve cancellation, failure policies, and application transcript hooks.
+  persist_messages saves greetings without analysis; persist=False disables hosted storage.
+  Incomplete output stays in application hooks. Durable SDK state retains retry identity across
+  restarts. Continue after hosted-storage failures with invocation-local stateless analysis. Respect
+  configured analysis mode and distinguish dependency timeout budgets from caller
+  cancellation/deadlines, including creation and hosted transcript writes. Creation returns None on
+  ordinary continue-policy failure; callers can explicitly opt into caesura_stateless without a
+  synthetic conversation ID. Keep strict hooks, auditing, cancellation, and deadlines intact.
+
+BREAKING CHANGE: create_conversation now returns str | None. Recoverable creation failures return
+  None under the default continue policy instead of raising. Callers must check the result before
+  storing/reusing it and explicitly select caesura_stateless=True to proceed without an ID. Hooks
+  for stateless calls must handle a missing conversation ID.
+
+### Breaking Changes
+
+- Create_conversation now returns str | None. Recoverable creation failures return None under the
+  default continue policy instead of raising. Callers must check the result before storing/reusing
+  it and explicitly select caesura_stateless=True to proceed without an ID. Hooks for stateless
+  calls must handle a missing conversation ID.
+
+
 ## v3.0.0 (2026-10-13)
 
 ### Features

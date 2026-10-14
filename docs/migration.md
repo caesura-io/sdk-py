@@ -4,7 +4,7 @@ Package and import names remain `caesura-io-core` / `caesura_core` and
 `caesura-io-openai` / `caesura_openai`. The product is CaesuraO and the default
 API URL is `https://api.caesurao.com`.
 
-## Upcoming release
+## Migrating to 4.0.0
 
 These changes apply when upgrading from 3.0.0.
 
@@ -58,8 +58,8 @@ replayed automatically; retry storage with the same ID. See
 
 ## Migrating from 2.x to 3.0
 
-The following describes the earlier 3.0 upgrade. It does not include the upcoming
-fallback and transcript-saving changes above.
+The following describes the earlier 3.0 upgrade. For 4.0.0, also apply the
+creation, fallback, and transcript-saving changes above.
 
 ### One authoritative conversation ID
 
